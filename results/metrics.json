@@ -1,0 +1,29 @@
+{
+  "baseline_val": {
+    "mae": 0.11732321977615356,
+    "mape": 0.016523664817214012
+  },
+  "baseline_test": {
+    "mae": 0.11055413633584976,
+    "mape": 0.02503853850066662
+  },
+  "blend_val": {
+    "mae": 0.11732321977615356,
+    "mape": 0.016523664817214012
+  },
+  "mlp_test": {
+    "mae": 0.11083536595106125,
+    "mape": 0.025112180039286613
+  },
+  "final_test": {
+    "mae": 0.11055413633584976,
+    "mape": 0.02503853850066662
+  },
+  "blend_alpha": 0.0,
+  "epochs": 81,
+  "artifacts": {
+    "model": "results\\mymodel.pt",
+    "training_curves": "results\\training_curves.png",
+    "test_predictions": "results\\test_predictions.png"
+  }
+}
