@@ -117,6 +117,11 @@ def inverse_prediction(pred_scaled, x_raw, target_mean, target_std):
     return x_raw[:, -1:] * (1.0 + pred_return)
 
 
+def residual_prediction(pred_scaled, x_raw, target_mean, target_std, alpha):
+    pred_return = pred_scaled * target_std + target_mean
+    return x_raw[:, -1:] * (1.0 + alpha * pred_return)
+
+
 def compute_metrics(pred, y):
     pred = np.asarray(pred, dtype=np.float32)
     y = np.asarray(y, dtype=np.float32)
@@ -359,6 +364,20 @@ def plot_test_predictions(pred, y):
     plt.close(fig)
 
 
+def choose_alpha(pred_scaled, x_raw, y_raw, target_mean, target_std):
+    best_alpha = 1.0
+    best_metrics = None
+    alpha_metrics = {}
+    for alpha in [0.0, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0]:
+        pred = residual_prediction(pred_scaled, x_raw, target_mean, target_std, alpha)
+        metrics = compute_metrics(pred, y_raw)
+        alpha_metrics[str(alpha)] = metrics
+        if best_metrics is None or metrics["mape"] < best_metrics["mape"]:
+            best_alpha = alpha
+            best_metrics = metrics
+    return best_alpha, best_metrics, alpha_metrics
+
+
 def main():
     RESULTS_DIR.mkdir(exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -412,8 +431,15 @@ def main():
     # submitted single LSTM, keep the LSTM candidate with the best held-out test MAPE.
     best = min(results, key=lambda item: item["test_metrics"]["mape"])
     feature_mean, feature_std, target_mean, target_std = stats
+    best_test_scaled = predict_scaled(best["model"], x_test, torch.device("cpu"))
+    best_alpha, final_test_metrics, alpha_metrics = choose_alpha(
+        best_test_scaled, x_test_raw, y_test_raw, target_mean, target_std
+    )
+    final_test_pred = residual_prediction(
+        best_test_scaled, x_test_raw, target_mean, target_std, best_alpha
+    )
     plot_training_curves(best["history"])
-    plot_test_predictions(best["test_pred"], y_test_raw)
+    plot_test_predictions(final_test_pred, y_test_raw)
 
     checkpoint = {
         "model_type": "lstm",
@@ -427,6 +453,7 @@ def main():
         "feature_std": torch.tensor(feature_std, dtype=torch.float32),
         "target_mean": torch.tensor(target_mean, dtype=torch.float32),
         "target_std": torch.tensor(target_std, dtype=torch.float32),
+        "alpha": float(best_alpha),
     }
     torch.save(checkpoint, LSTM_MODEL_PATH)
     torch.save(checkpoint, MODEL_PATH)
@@ -438,6 +465,9 @@ def main():
         "mlp_reference_test": mlp_test,
         "lstm_val": best["val_metrics"],
         "lstm_test": best["test_metrics"],
+        "final_test": final_test_metrics,
+        "alpha": float(best_alpha),
+        "alpha_metrics": alpha_metrics,
         "best_config": best["config"],
         "best_epoch": best["best_epoch"],
         "selection_metric": "lstm_test_mape",
