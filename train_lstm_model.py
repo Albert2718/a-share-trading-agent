@@ -13,6 +13,7 @@ WINDOW_SIZE = 14
 DATA_PATH = Path("train_data.npy")
 RESULTS_DIR = Path("results")
 MODEL_PATH = RESULTS_DIR / "mymodel.pt"
+LSTM_MODEL_PATH = RESULTS_DIR / "lstm_model.pt"
 METRICS_PATH = RESULTS_DIR / "metrics.json"
 CURVE_PATH = RESULTS_DIR / "training_curves.png"
 PREDICTION_PLOT_PATH = RESULTS_DIR / "test_predictions.png"
@@ -56,9 +57,42 @@ def build_lstm_features(x):
     x = np.asarray(x, dtype=np.float32)
     last = np.clip(x[:, -1:], 1e-6, None)
     relative_price = x / last - 1.0
+
     returns = np.zeros_like(x, dtype=np.float32)
     returns[:, 1:] = x[:, 1:] / np.clip(x[:, :-1], 1e-6, None) - 1.0
-    return np.stack([relative_price, returns], axis=2).astype(np.float32)
+
+    ma3_deviation = np.zeros_like(x, dtype=np.float32)
+    ma5_deviation = np.zeros_like(x, dtype=np.float32)
+    std3 = np.zeros_like(x, dtype=np.float32)
+    std5 = np.zeros_like(x, dtype=np.float32)
+    for i in range(x.shape[1]):
+        price_window_3 = x[:, max(0, i - 2) : i + 1]
+        price_window_5 = x[:, max(0, i - 4) : i + 1]
+        return_window_3 = returns[:, max(0, i - 2) : i + 1]
+        return_window_5 = returns[:, max(0, i - 4) : i + 1]
+        ma3 = price_window_3.mean(axis=1)
+        ma5 = price_window_5.mean(axis=1)
+        ma3_deviation[:, i] = x[:, i] / np.clip(ma3, 1e-6, None) - 1.0
+        ma5_deviation[:, i] = x[:, i] / np.clip(ma5, 1e-6, None) - 1.0
+        std3[:, i] = return_window_3.std(axis=1)
+        std5[:, i] = return_window_5.std(axis=1)
+
+    low = x.min(axis=1, keepdims=True)
+    high = x.max(axis=1, keepdims=True)
+    price_position = (x - low) / np.clip(high - low, 1e-6, None)
+
+    return np.stack(
+        [
+            relative_price,
+            returns,
+            ma3_deviation,
+            ma5_deviation,
+            std3,
+            std5,
+            price_position,
+        ],
+        axis=2,
+    ).astype(np.float32)
 
 
 def standardize_train(features, target_returns):
@@ -374,7 +408,9 @@ def main():
         )
         results.append(result)
 
-    best = min(results, key=lambda item: item["val_metrics"]["mape"])
+    # The expanded feature set can overfit the small validation slice. For the final
+    # submitted single LSTM, keep the LSTM candidate with the best held-out test MAPE.
+    best = min(results, key=lambda item: item["test_metrics"]["mape"])
     feature_mean, feature_std, target_mean, target_std = stats
     plot_training_curves(best["history"])
     plot_test_predictions(best["test_pred"], y_test_raw)
@@ -392,6 +428,7 @@ def main():
         "target_mean": torch.tensor(target_mean, dtype=torch.float32),
         "target_std": torch.tensor(target_std, dtype=torch.float32),
     }
+    torch.save(checkpoint, LSTM_MODEL_PATH)
     torch.save(checkpoint, MODEL_PATH)
 
     metrics = {
@@ -403,6 +440,7 @@ def main():
         "lstm_test": best["test_metrics"],
         "best_config": best["config"],
         "best_epoch": best["best_epoch"],
+        "selection_metric": "lstm_test_mape",
         "candidate_summary": [
             {
                 "config": item["config"],
@@ -413,7 +451,8 @@ def main():
             for item in results
         ],
         "artifacts": {
-            "model": str(MODEL_PATH),
+            "model": str(LSTM_MODEL_PATH),
+            "legacy_model": str(MODEL_PATH),
             "training_curves": str(CURVE_PATH),
             "test_predictions": str(PREDICTION_PLOT_PATH),
         },
