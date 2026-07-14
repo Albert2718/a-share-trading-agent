@@ -17,24 +17,73 @@ def _row_to_dict(row) -> Dict[str, Any]:
     }
 
 
+def _regular_market_session(quote_time: str) -> str:
+    try:
+        quoted_at = datetime.fromisoformat(str(quote_time))
+    except (TypeError, ValueError):
+        return "unknown"
+    minute_of_day = quoted_at.hour * 60 + quoted_at.minute
+    in_morning = 9 * 60 + 30 <= minute_of_day <= 11 * 60 + 30
+    in_afternoon = 13 * 60 <= minute_of_day <= 15 * 60
+    if quoted_at.weekday() < 5 and (in_morning or in_afternoon):
+        return "within_regular_trading_hours"
+    return "outside_regular_trading_hours"
+
+
 def get_realtime_price(code: str) -> Dict[str, Any]:
-    """Return the latest available A-share price from cached daily data."""
+    """Return an A-share realtime quote, falling back to the latest daily close."""
     tools = AkshareMarketData()
     norm = normalize_a_share_code(code)
-    candidate = tools.candidates_from_codes([norm])[0]
+    try:
+        quote = tools.realtime_quote(norm)
+    except Exception:
+        quote = {}
+    latest_price = safe_float(quote.get("latest_price"))
+    if latest_price is not None:
+        quote_time = str(quote.get("quote_time") or "")
+        return {
+            "ok": True,
+            "is_realtime": True,
+            "code": norm,
+            "name": str(quote.get("name") or ""),
+            "quote_time": quote_time,
+            "market_session": _regular_market_session(quote_time),
+            "data_freshness": str(quote.get("data_freshness") or "live"),
+            "quote_age_seconds": safe_float(quote.get("quote_age_seconds"), 0),
+            "latest_price": latest_price,
+            "latest_close": latest_price,
+            "previous_close": safe_float(quote.get("previous_close")),
+            "open": safe_float(quote.get("open")),
+            "high": safe_float(quote.get("high")),
+            "low": safe_float(quote.get("low")),
+            "volume": safe_float(quote.get("volume")),
+            "volume_unit": str(quote.get("volume_unit") or "shares"),
+            "amount": safe_float(quote.get("amount")),
+            "change": safe_float(quote.get("change")),
+            "change_pct": safe_float(quote.get("change_pct")),
+            "change_pct_unit": "percent",
+            "source": str(quote.get("source") or "akshare_realtime"),
+        }
+
     history = tools.history(norm, days=8)
     if history.empty:
-        return {"ok": False, "code": norm, "error": "no market data"}
+        return {"ok": False, "is_realtime": False, "code": norm, "error": "no market data"}
+    candidate = tools.candidates_from_codes([norm])[0]
     latest = _row_to_dict(history.iloc[-1])
     previous_close = safe_float(history.iloc[-2]["close"]) if len(history) >= 2 else None
     latest_close = safe_float(latest.get("close"))
     change = latest_close - previous_close if latest_close is not None and previous_close is not None else None
-    change_pct = change / previous_close if change is not None and previous_close not in (None, 0) else None
+    change_pct = change / previous_close * 100 if change is not None and previous_close not in (None, 0) else None
     return {
         "ok": True,
+        "is_realtime": False,
         "code": norm,
-        "name": candidate.name,
+        "name": str(candidate.get("name") or ""),
         "date": str(latest.get("date", "")),
+        "quote_time": str(latest.get("date", "")),
+        "market_session": "historical_fallback",
+        "data_freshness": "historical",
+        "latest_price": latest_close,
         "latest_close": latest_close,
         "open": safe_float(latest.get("open")),
         "high": safe_float(latest.get("high")),
@@ -42,7 +91,9 @@ def get_realtime_price(code: str) -> Dict[str, Any]:
         "volume": safe_float(latest.get("volume")),
         "change": change,
         "change_pct": change_pct,
-        "source": "akshare_daily_latest",
+        "change_pct_unit": "percent",
+        "source": "akshare_daily_fallback",
+        "warning": "realtime quote unavailable; using latest daily close",
     }
 
 

@@ -1,17 +1,22 @@
 ﻿from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
 from src.core import DataAccessLayer
-from src.tools.utils import normalize_a_share_code
+from src.tools.utils import normalize_a_share_code, safe_float
 
 
 class AkshareMarketData:
-    def __init__(self, data_access: DataAccessLayer | None = None):
+    def __init__(
+        self,
+        data_access: DataAccessLayer | None = None,
+        now_fn: Callable[[], datetime] | None = None,
+    ):
         self.data_access = data_access or DataAccessLayer()
+        self._now_fn = now_fn or (lambda: datetime.now().astimezone())
         self._ak = None
 
     def available(self) -> bool:
@@ -59,6 +64,72 @@ class AkshareMarketData:
             if code:
                 candidates.append({"code": normalize_a_share_code(str(code)), "name": str(name or "")})
         return candidates
+
+    def realtime_quote(self, code: str) -> Dict[str, Any]:
+        norm = normalize_a_share_code(code)
+
+        def loader():
+            ak = self._require_akshare()
+            errors = []
+            providers = [
+                ("akshare_stock_zh_a_spot_em", ak.stock_zh_a_spot_em),
+                ("akshare_stock_zh_a_spot_sina", ak.stock_zh_a_spot),
+            ]
+            for source, fetcher in providers:
+                try:
+                    records = self._records(fetcher())
+                    if records:
+                        return {
+                            "source": source,
+                            "fetched_at": self._now_fn().isoformat(timespec="seconds"),
+                            "records": records,
+                        }
+                    errors.append(f"{source}: empty")
+                except Exception as exc:
+                    errors.append(f"{source}: {exc}")
+            raise RuntimeError("all realtime providers failed; " + " | ".join(errors[-2:]))
+
+        payload = self.data_access.fetch(
+            "akshare",
+            "stock_zh_a_spot",
+            "all",
+            300,
+            2.0,
+            loader,
+        )
+        now = self._now_fn()
+        fetched_at = str(payload.get("fetched_at") or now.isoformat(timespec="seconds"))
+        quote_age_seconds = self._quote_age_seconds(fetched_at, now)
+        if not self._realtime_snapshot_is_usable(fetched_at, now, quote_age_seconds):
+            return {}
+        source = str(payload.get("source") or "akshare_realtime")
+        for row in payload.get("records", []):
+            raw_code = self._value(row, ["代码", "股票代码", "证券代码", "code"])
+            if raw_code is None or normalize_a_share_code(str(raw_code)) != norm:
+                continue
+            timestamp = self._value(row, ["时间戳", "时间", "timestamp"])
+            volume = safe_float(self._value(row, ["成交量", "volume"]))
+            if volume is not None and source == "akshare_stock_zh_a_spot_em":
+                volume *= 100
+            return {
+                "code": norm,
+                "name": str(self._value(row, ["名称", "股票名称", "证券简称", "name"]) or ""),
+                "latest_price": self._value(row, ["最新价", "最新", "price"]),
+                "previous_close": self._value(row, ["昨收", "昨收价", "previous_close"]),
+                "open": self._value(row, ["今开", "开盘", "open"]),
+                "high": self._value(row, ["最高", "high"]),
+                "low": self._value(row, ["最低", "low"]),
+                "volume": volume,
+                "volume_unit": "shares",
+                "amount": self._value(row, ["成交额", "amount"]),
+                "change": self._value(row, ["涨跌额", "涨跌", "change"]),
+                "change_pct": self._value(row, ["涨跌幅", "涨幅", "change_pct"]),
+                "quote_time": self._normalize_quote_time(timestamp, fetched_at),
+                "quote_age_seconds": quote_age_seconds,
+                "data_freshness": "live" if quote_age_seconds <= 300 else "cached",
+                "source": source,
+            }
+        return {}
 
     def history(self, code: str, days: int = 160) -> pd.DataFrame:
         norm = normalize_a_share_code(code)
@@ -245,3 +316,37 @@ class AkshareMarketData:
             if name in row and row[name] not in (None, ""):
                 return row[name]
         return None
+
+    def _normalize_quote_time(self, timestamp: Any, fetched_at: str) -> str:
+        text = str(timestamp or "").strip()
+        if len(text) == 8 and text.count(":") == 2:
+            fetched = datetime.fromisoformat(fetched_at)
+            return fetched.replace(
+                hour=int(text[0:2]),
+                minute=int(text[3:5]),
+                second=int(text[6:8]),
+                microsecond=0,
+            ).isoformat(timespec="seconds")
+        return text or fetched_at
+
+    def _quote_age_seconds(self, fetched_at: str, now: datetime) -> int:
+        try:
+            fetched = datetime.fromisoformat(fetched_at)
+            if fetched.tzinfo is None:
+                fetched = fetched.replace(tzinfo=now.tzinfo)
+            return max(0, int((now - fetched).total_seconds()))
+        except (TypeError, ValueError):
+            return 0
+
+    def _realtime_snapshot_is_usable(self, fetched_at: str, now: datetime, age_seconds: int) -> bool:
+        if age_seconds <= 900:
+            return True
+        try:
+            fetched = datetime.fromisoformat(fetched_at)
+        except (TypeError, ValueError):
+            return False
+        minute_of_day = now.hour * 60 + now.minute
+        in_morning = 9 * 60 + 30 <= minute_of_day <= 11 * 60 + 30
+        in_afternoon = 13 * 60 <= minute_of_day <= 15 * 60
+        within_regular_hours = now.weekday() < 5 and (in_morning or in_afternoon)
+        return not within_regular_hours and fetched.date() == now.date()

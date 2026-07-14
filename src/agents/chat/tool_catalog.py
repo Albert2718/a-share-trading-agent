@@ -71,7 +71,7 @@ class _ToolCatalog:
         return [
             self._schema(
                 "get_realtime_price",
-                "查询 A 股个股最近可用行情和涨跌幅。用于回答今天涨了吗、当前价格、最新收盘价等问题。",
+                "优先查询 A 股个股实时行情和涨跌幅；实时源不可用时才返回最近交易日收盘行情，并通过 is_realtime 标记。用于回答今天涨了吗、当前价格等问题。",
                 {"code": ("string", "6 位 A 股代码，例如 600519。")},
                 ["code"],
             ),
