@@ -175,9 +175,9 @@
     }
   ],
   "artifacts": {
-    "model": "results\\lstm_model.pt",
-    "legacy_model": "results\\mymodel.pt",
-    "training_curves": "results\\training_curves.png",
-    "test_predictions": "results\\test_predictions.png"
+    "model": "artifacts\\models\\lstm_model.pt",
+    "legacy_model": "artifacts\\models\\mymodel.pt",
+    "training_curves": "artifacts\\models\\training_curves.png",
+    "test_predictions": "artifacts\\models\\test_predictions.png"
   }
 }

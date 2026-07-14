@@ -10,8 +10,9 @@ from torch.utils.data import DataLoader, TensorDataset
 
 
 WINDOW_SIZE = 14
-DATA_PATH = Path("train_data.npy")
-RESULTS_DIR = Path("results")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = PROJECT_ROOT / "experiments" / "train_data.npy"
+RESULTS_DIR = PROJECT_ROOT / "artifacts" / "models"
 MODEL_PATH = RESULTS_DIR / "mymodel.pt"
 LSTM_MODEL_PATH = RESULTS_DIR / "lstm_model.pt"
 METRICS_PATH = RESULTS_DIR / "metrics.json"

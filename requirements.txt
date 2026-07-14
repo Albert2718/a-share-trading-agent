@@ -1,0 +1,10 @@
+akshare
+inquirerpy
+langgraph
+numpy
+openai
+pandas
+python-dotenv
+requests
+rich
+torch
