@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
 import pandas as pd
@@ -90,12 +92,15 @@ class EvaluationForecaster:
         provider: str | None = None,
     ) -> None:
         config = load_config()
-        self.model_id = model_id or config.news_agent_model
         self.orchestrator = orchestrator or ResearchOrchestrator()
-        self.llm_client = llm_client or LLMClient(model=self.model_id)
+        configured_model = model_id or config.news_agent_model
+        self.llm_client = llm_client or LLMClient(model=configured_model)
+        self.model_id = _safe_label(
+            getattr(self.llm_client, "model", None) or configured_model
+        )
         self.market_data = market_data or EvaluationMarketData()
         self.lstm_predictor = lstm_predictor or LSTMPredictor()
-        self.provider = provider or _provider_name(self.llm_client)
+        self.provider = _provider_name(provider or getattr(self.llm_client, "base_url", None))
 
     def forecast(
         self,
@@ -112,12 +117,14 @@ class EvaluationForecaster:
             raise ValueError("target must be later than as_of")
 
         generated = _coerce_cutoff(generated_at)
+        if generated.date() != as_of:
+            raise ValueError("generated_at local date must equal as_of")
         history, current_close, volatility = self._load_history(entry.code, as_of)
-        decision = self._run_research(entry, as_of)
+        decision = self._run_research(entry, as_of, generated)
         reports, warnings = _cutoff_safe_reports(decision, generated)
         llm_reports = _reports_for_llm(reports)
         horizon_days = 1 if kind == "next_day" else max(1, (target - as_of).days)
-        payload = {
+        payload = _redact_recursive({
             "stock": {
                 "code": entry.code,
                 "name": entry.name,
@@ -132,7 +139,7 @@ class EvaluationForecaster:
             "realized_volatility": volatility,
             "reports": llm_reports,
             "warnings": list(warnings),
-        }
+        })
         response = self.llm_client.structured(
             system_prompt=FORECAST_SYSTEM_PROMPT,
             user_payload=payload,
@@ -182,6 +189,14 @@ class EvaluationForecaster:
             warnings=tuple(_unique(warnings)),
             model_id=self.model_id,
             provider=self.provider,
+            research_news_model_id=_research_model_id(
+                getattr(self.orchestrator, "news", None),
+                fallback_attribute="news_agent_model",
+            ),
+            research_cio_model_id=_research_model_id(
+                getattr(self.orchestrator, "cio", None),
+                fallback_attribute="model",
+            ),
             lstm_checkpoint=_checkpoint_identifier(self.lstm_predictor),
             stage_direction=agent_forecast.direction if stage else None,
             stage_target_price=agent_forecast.predicted_close if stage else None,
@@ -202,14 +217,24 @@ class EvaluationForecaster:
         if not {"date", "close"}.issubset(history.columns):
             raise RuntimeError("quant history has an invalid schema")
 
-        parsed_dates = pd.to_datetime(history["date"], errors="coerce")
-        if parsed_dates.isna().any():
+        try:
+            parsed_values = [pd.Timestamp(value) for value in history["date"]]
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("quant history contains an invalid date") from exc
+        if any(pd.isna(value) for value in parsed_values):
             raise RuntimeError("quant history contains an invalid date")
-        if parsed_dates.iloc[-1].date() != as_of:
+        history_dates = pd.Series([value.date() for value in parsed_values])
+        if history_dates.duplicated().any():
+            raise RuntimeError("quant history contains duplicate dates")
+        if not history_dates.is_monotonic_increasing:
+            raise RuntimeError("quant history dates are not monotonic")
+        if any(value > as_of for value in history_dates):
+            raise RuntimeError("quant history contains a date after as_of")
+        if history_dates.max() != as_of or history_dates.iloc[-1] != as_of:
             raise RuntimeError("quant history latest date does not match as_of")
 
         clean = history.copy()
-        clean["date"] = parsed_dates
+        clean["date"] = pd.to_datetime(history_dates)
         clean["close"] = pd.to_numeric(clean["close"], errors="coerce")
         closes = clean["close"]
         if closes.isna().any() or len(closes) < 2:
@@ -223,7 +248,12 @@ class EvaluationForecaster:
             raise RuntimeError("quant history volatility is invalid")
         return clean, current_close, volatility
 
-    def _run_research(self, entry: StockPoolEntry, as_of: date) -> StockDecision:
+    def _run_research(
+        self,
+        entry: StockPoolEntry,
+        as_of: date,
+        generated_at: datetime,
+    ) -> StockDecision:
         report = self.orchestrator.analyze(
             [StockCandidate(code=entry.code, name=entry.name)],
             AnalysisContext(
@@ -231,6 +261,8 @@ class EvaluationForecaster:
                 risk_profile="balanced",
                 use_llm=True,
                 as_of=as_of.isoformat(),
+                cutoff_at=generated_at.isoformat(),
+                include_model_signal=False,
                 history_days=250,
             ),
             mode="single",
@@ -253,11 +285,12 @@ def _cutoff_safe_reports(
     decision: StockDecision, generated_at: datetime
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     reports = {
-        "quant": _json_safe(deepcopy(decision.quant)),
-        "fundamental": _json_safe(deepcopy(decision.fundamental)),
-        "news": _json_safe(deepcopy(decision.news)),
-        "sentiment": _json_safe(deepcopy(decision.sentiment)),
+        "quant": _redact_recursive(_json_safe(deepcopy(decision.quant))),
+        "fundamental": _redact_recursive(_json_safe(deepcopy(decision.fundamental))),
+        "news": _redact_recursive(_json_safe(deepcopy(decision.news))),
+        "sentiment": _redact_recursive(_json_safe(deepcopy(decision.sentiment))),
     }
+    _remove_model_signal(reports["quant"])
     warnings: list[str] = []
     events = reports["news"].get("events", [])
     if not isinstance(events, list):
@@ -277,21 +310,22 @@ def _cutoff_safe_reports(
             continue
         accepted.append(event)
     reports["news"]["events"] = accepted
+    news_error = str(reports["news"].get("error") or "")
+    for warning in (
+        "news_after_cutoff",
+        "news_timestamp_blank",
+        "news_timestamp_unparseable",
+        "news_timestamp_unverifiable",
+    ):
+        if warning in news_error:
+            warnings.append(warning)
     return reports, _unique(warnings)
 
 
 def _reports_for_llm(reports: Mapping[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     llm_reports = deepcopy(dict(reports))
-    quant = llm_reports["quant"]
-    quant.pop("model_expected_return", None)
-    factors = quant.get("key_factors")
-    if isinstance(factors, list):
-        quant["key_factors"] = [
-            factor
-            for factor in factors
-            if not (isinstance(factor, str) and "lstm" in factor.casefold())
-        ]
-    return llm_reports
+    _remove_model_signal(llm_reports["quant"])
+    return _redact_recursive(llm_reports)
 
 
 def _parse_research_draft(response: Any) -> ResearchDraft:
@@ -377,13 +411,13 @@ def _research_evidence(
         )
         for name, report in reports.items()
     ]
-    decision_snapshot = _json_safe(asdict(decision))
+    decision_snapshot = _safe_cio_snapshot(decision, reports)
     for name, report in reports.items():
         decision_snapshot[name] = report
     evidence.append(
         EvidenceItem(
             source="research:cio",
-            summary=decision.reason,
+            summary=decision_snapshot.get("reason", ""),
             retrieved_at=generated_at,
             evidence_type="cio_decision",
             metadata={"decision": decision_snapshot},
@@ -419,9 +453,25 @@ def _checkpoint_identifier(predictor: Any) -> str:
     return f"{path_text}|sha256:{digest}"
 
 
-def _provider_name(llm_client: Any) -> str:
-    base_url = getattr(llm_client, "base_url", None)
-    return str(base_url) if base_url else "openai-compatible"
+def _provider_name(value: Any) -> str:
+    if value is None or not str(value).strip():
+        return "openai-compatible"
+    text = str(value).strip()
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        parsed = None
+    if parsed is not None and parsed.hostname:
+        return parsed.hostname.lower()
+    return _safe_label(text)
+
+
+def _research_model_id(analyst: Any, fallback_attribute: str) -> str:
+    if analyst is None:
+        return ""
+    llm_client = getattr(analyst, "llm_client", None)
+    value = getattr(llm_client, "model", None) if llm_client is not None else None
+    return _safe_label(value or getattr(analyst, fallback_attribute, ""))
 
 
 def _coerce_cutoff(value: datetime | str | None) -> datetime:
@@ -463,6 +513,122 @@ def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, bool, int, float)):
         return value
     return str(value)
+
+
+def _remove_model_signal(quant: dict[str, Any]) -> None:
+    quant.pop("model_expected_return", None)
+    factors = quant.get("key_factors")
+    if isinstance(factors, list):
+        quant["key_factors"] = [
+            factor
+            for factor in factors
+            if not (isinstance(factor, str) and "lstm" in factor.casefold())
+        ]
+
+
+def _safe_cio_snapshot(
+    decision: StockDecision,
+    reports: Mapping[str, dict[str, Any]],
+) -> dict[str, Any]:
+    snapshot = _redact_recursive(_json_safe(asdict(decision)))
+    for name, report in reports.items():
+        snapshot[name] = report
+
+    forbidden = {"lstm", "model_expected_return"}
+    original_events = _json_safe(decision.news).get("events", [])
+    safe_summaries = {
+        str(event.get("summary", ""))
+        for event in reports["news"].get("events", [])
+        if isinstance(event, dict)
+    }
+    for event in original_events if isinstance(original_events, list) else []:
+        if isinstance(event, dict):
+            summary = str(event.get("summary", ""))
+            if summary and summary not in safe_summaries:
+                forbidden.add(summary.casefold())
+
+    def safe_text(value: Any) -> bool:
+        text = str(value).casefold()
+        return not any(marker in text for marker in forbidden)
+
+    if not safe_text(snapshot.get("reason", "")):
+        snapshot["reason"] = ""
+    for field in ("top_reasons", "risk_flags", "invalidation_conditions"):
+        values = snapshot.get(field, [])
+        if isinstance(values, list):
+            snapshot[field] = [value for value in values if safe_text(value)]
+    return snapshot
+
+
+_SENSITIVE_KEYS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "access_token",
+    "refresh_token",
+}
+_URL_PATTERN = re.compile(r"https?://[^\s;]+", re.IGNORECASE)
+_AUTH_PATTERN = re.compile(
+    r"authorization\s*:\s*(?:bearer|basic)\s+[^\s;]+",
+    re.IGNORECASE,
+)
+_CREDENTIAL_PATTERN = re.compile(
+    r"\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret))\s*=\s*[^\s&;]+",
+    re.IGNORECASE,
+)
+
+
+def _redact_recursive(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        result = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if _is_sensitive_key(key_text):
+                result[key_text] = "[REDACTED]"
+            else:
+                result[key_text] = _redact_recursive(item)
+        return result
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_redact_recursive(item) for item in value]
+    if isinstance(value, str):
+        return _sanitize_string(value)
+    return value
+
+
+def _sanitize_string(value: str) -> str:
+    text = _AUTH_PATTERN.sub("Authorization: [REDACTED]", value)
+    text = _CREDENTIAL_PATTERN.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
+
+    def sanitize_url(match: re.Match[str]) -> str:
+        raw_url = match.group(0)
+        try:
+            parsed = urlsplit(raw_url)
+        except ValueError:
+            return "[REDACTED_URL]"
+        if not parsed.hostname:
+            return "[REDACTED_URL]"
+        host = parsed.hostname
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+
+    return _URL_PATTERN.sub(sanitize_url, text)
+
+
+def _safe_label(value: Any) -> str:
+    text = _sanitize_string(str(value or "")).strip()
+    return text if "[REDACTED]" not in text else "[REDACTED]"
+
+
+def _is_sensitive_key(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+    if normalized in _SENSITIVE_KEYS:
+        return True
+    return normalized.endswith(("_api_key", "_authorization", "_password", "_secret", "_token"))
 
 
 def _is_finite_number(value: Any) -> bool:

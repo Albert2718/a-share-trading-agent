@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import math
+import json
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -35,8 +37,16 @@ def valid_llm_response(**overrides):
 
 
 class FakeLLM:
-    def __init__(self, response=None):
+    def __init__(
+        self,
+        response=None,
+        *,
+        model="injected-evaluation-model",
+        base_url="https://api.example.com/v1",
+    ):
         self.response = valid_llm_response() if response is None else response
+        self.model = model
+        self.base_url = base_url
         self.payload = None
         self.calls = []
 
@@ -49,6 +59,14 @@ class FakeLLM:
 class FakeOrchestrator:
     def __init__(self, news_time="2026-07-14T17:00:00+08:00"):
         self.calls = []
+        self.news = SimpleNamespace(
+            llm_client=SimpleNamespace(model="injected-research-news-model"),
+            news_agent_model="configured-research-news-model",
+        )
+        self.cio = SimpleNamespace(
+            llm_client=SimpleNamespace(model="injected-research-cio-model"),
+            model="configured-research-cio-model",
+        )
         self.decision = StockDecision(
             code="600519",
             name="贵州茅台",
@@ -101,11 +119,19 @@ class FakeOrchestrator:
 
 
 class FakeMarketData:
-    def __init__(self, *, latest_date=AS_OF, empty=False, volatility=0.02):
+    def __init__(
+        self,
+        *,
+        latest_date=AS_OF,
+        empty=False,
+        volatility=0.02,
+        date_defect=None,
+    ):
         self.calls = []
         self.latest_date = latest_date
         self.empty = empty
         self.volatility = volatility
+        self.date_defect = date_defect
 
     def raw_history(self, code, days, end_date):
         self.calls.append({"code": code, "days": days, "end_date": end_date})
@@ -118,11 +144,29 @@ class FakeMarketData:
         scale = 100.0 / closes[-1]
         closes = [value * scale for value in closes]
         start = self.latest_date - timedelta(days=len(closes) - 1)
-        return pd.DataFrame({
+        frame = pd.DataFrame({
             "date": [start + timedelta(days=index) for index in range(len(closes))],
             "close": closes,
             "volume": [1000.0] * len(closes),
         })
+        if self.date_defect == "invalid":
+            frame.loc[5, "date"] = "not-a-date"
+        elif self.date_defect == "duplicate":
+            frame.loc[5, "date"] = frame.loc[4, "date"]
+        elif self.date_defect == "duplicate_day":
+            frame.loc[5, "date"] = datetime.combine(
+                frame.loc[4, "date"],
+                datetime.min.time(),
+                tzinfo=timezone.utc,
+            ) + timedelta(hours=12)
+        elif self.date_defect == "unsorted":
+            frame.loc[4, "date"], frame.loc[5, "date"] = (
+                frame.loc[5, "date"],
+                frame.loc[4, "date"],
+            )
+        elif self.date_defect == "future":
+            frame.loc[5, "date"] = self.latest_date + timedelta(days=1)
+        return frame
 
 
 class FakeLSTM:
@@ -143,16 +187,19 @@ def make_forecaster(
     lstm_return=-0.01,
     market_data=None,
     model_path="fake-lstm.pt",
+    model_id=None,
+    provider=None,
+    llm=None,
 ):
-    llm = FakeLLM(llm_response)
+    llm = llm or FakeLLM(llm_response)
     orchestrator = FakeOrchestrator(news_time=news_time)
     forecaster = EvaluationForecaster(
         orchestrator=orchestrator,
         llm_client=llm,
         market_data=market_data or FakeMarketData(),
         lstm_predictor=FakeLSTM(lstm_return, model_path=model_path),
-        model_id="test-model",
-        provider="test-provider",
+        model_id=model_id,
+        provider=provider,
     )
     return forecaster, llm, orchestrator
 
@@ -282,7 +329,7 @@ class ForecastingTests(unittest.TestCase):
         self.assertEqual(llm.payload["reports"]["news"]["events"], [])
         self.assertIn("news_timestamp_unverifiable", record.warnings)
 
-    def test_lstm_values_are_hidden_from_llm_but_retained_in_evidence(self):
+    def test_residual_lstm_values_are_removed_from_payload_and_persisted_research(self):
         forecaster, llm, _ = make_forecaster()
 
         record = forecaster.forecast(
@@ -295,8 +342,12 @@ class ForecastingTests(unittest.TestCase):
         quant_evidence = next(
             item for item in record.evidence if item.source == "research:quant"
         )
-        self.assertEqual(quant_evidence.metadata["report"]["model_expected_return"], 0.03)
-        self.assertIn("LSTM", quant_evidence.metadata["report"]["key_factors"][0])
+        self.assertNotIn("model_expected_return", quant_evidence.metadata["report"])
+        self.assertNotIn("lstm", str(quant_evidence.metadata).lower())
+        cio_evidence = next(
+            item for item in record.evidence if item.evidence_type == "cio_decision"
+        )
+        self.assertNotIn("lstm", str(cio_evidence.metadata).lower())
 
     def test_lstm_unavailable_adds_warning_and_preserves_research_forecast(self):
         forecaster, _, _ = make_forecaster(lstm_return=None)
@@ -331,6 +382,8 @@ class ForecastingTests(unittest.TestCase):
         self.assertEqual(call["context"].risk_profile, "balanced")
         self.assertTrue(call["context"].use_llm)
         self.assertEqual(call["context"].as_of, AS_OF.isoformat())
+        self.assertEqual(call["context"].cutoff_at, GENERATED_AT.isoformat())
+        self.assertFalse(call["context"].include_model_signal)
         self.assertEqual(call["context"].history_days, 250)
         self.assertEqual(
             forecaster.market_data.calls,
@@ -371,6 +424,93 @@ class ForecastingTests(unittest.TestCase):
                         ENTRY, AS_OF, TARGET, "next_day", generated_at=GENERATED_AT
                     )
 
+    def test_history_rejects_invalid_duplicate_unsorted_and_future_dates(self):
+        for defect in ("invalid", "duplicate", "duplicate_day", "unsorted", "future"):
+            with self.subTest(defect=defect):
+                forecaster, _, _ = make_forecaster(
+                    market_data=FakeMarketData(date_defect=defect)
+                )
+                with self.assertRaisesRegex(RuntimeError, "history"):
+                    forecaster.forecast(
+                        ENTRY, AS_OF, TARGET, "next_day", generated_at=GENERATED_AT
+                    )
+
+    def test_generated_at_must_have_same_local_date_as_as_of(self):
+        forecaster, _, orchestrator = make_forecaster()
+
+        with self.assertRaisesRegex(ValueError, "generated_at local date"):
+            forecaster.forecast(
+                ENTRY,
+                AS_OF,
+                TARGET,
+                "next_day",
+                generated_at="2026-07-13T23:59:00+08:00",
+            )
+
+        self.assertEqual(orchestrator.calls, [])
+
+    def test_injected_models_and_sanitized_provider_are_recorded(self):
+        llm = FakeLLM(
+            model="injected-evaluation-model",
+            base_url="https://user:password@api.example.com/v1?api_key=query-secret",
+        )
+        forecaster, _, _ = make_forecaster(
+            llm=llm,
+            model_id="configured-but-wrong-model",
+        )
+
+        record = forecaster.forecast(
+            ENTRY, AS_OF, TARGET, "next_day", generated_at=GENERATED_AT
+        )
+
+        self.assertEqual(record.model_id, "injected-evaluation-model")
+        self.assertEqual(record.research_news_model_id, "injected-research-news-model")
+        self.assertEqual(record.research_cio_model_id, "injected-research-cio-model")
+        self.assertEqual(record.provider, "api.example.com")
+
+    def test_credentials_are_redacted_before_llm_payload_and_persistence(self):
+        llm = FakeLLM(
+            base_url="https://user:password@api.example.com/v1?api_key=query-secret"
+        )
+        forecaster, _, orchestrator = make_forecaster(llm=llm)
+        orchestrator.decision.fundamental.update({
+            "api_key": "top-secret",
+            "OPENAI_API_KEY": "openai-secret",
+            "nested": {
+                "client_secret": "client-secret",
+                "Authorization": "Bearer nested-secret",
+            },
+            "error": (
+                "Authorization: Bearer bearer-secret; "
+                "https://user:password@provider.example/v1?token=query-secret"
+            ),
+        })
+
+        record = forecaster.forecast(
+            ENTRY, AS_OF, TARGET, "next_day", generated_at=GENERATED_AT
+        )
+
+        serialized = json.dumps(
+            {
+                "payload": llm.payload,
+                "evidence": [item.to_dict() for item in record.evidence],
+                "provider": record.provider,
+            },
+            ensure_ascii=False,
+        ).lower()
+        for secret in (
+            "top-secret",
+            "openai-secret",
+            "client-secret",
+            "nested-secret",
+            "bearer-secret",
+            "query-secret",
+            "user:password",
+            "authorization: bearer",
+        ):
+            self.assertNotIn(secret, serialized)
+        self.assertIn("[redacted]", serialized)
+
     def test_stage_record_contains_thesis_and_provenance(self):
         checkpoint = Path(__file__)
         forecaster, _, _ = make_forecaster(model_path=checkpoint)
@@ -383,8 +523,8 @@ class ForecastingTests(unittest.TestCase):
             generated_at=GENERATED_AT,
         )
 
-        self.assertEqual(record.model_id, "test-model")
-        self.assertEqual(record.provider, "test-provider")
+        self.assertEqual(record.model_id, "injected-evaluation-model")
+        self.assertEqual(record.provider, "api.example.com")
         self.assertIn(str(checkpoint), record.lstm_checkpoint)
         self.assertIn("sha256:", record.lstm_checkpoint)
         self.assertEqual(record.stage_direction, record.agent.direction)

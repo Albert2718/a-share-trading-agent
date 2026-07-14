@@ -149,6 +149,8 @@ class PredictionRecord:
     warnings: tuple[str, ...] = ()
     model_id: str = ""
     provider: str = ""
+    research_news_model_id: str = ""
+    research_cio_model_id: str = ""
     lstm_checkpoint: str = ""
     stage_direction: str | None = None
     stage_target_price: float | None = None
