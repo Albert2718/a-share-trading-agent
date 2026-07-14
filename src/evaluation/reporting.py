@@ -31,6 +31,7 @@ class ReportBuilder:
         self, predictions: list[PredictionRecord], outcomes: list[OutcomeRecord]
     ) -> dict:
         by_id = {record.prediction_id: record for record in predictions}
+        settlement_metadata = self._settlement_metadata()
         verified = [outcome for outcome in outcomes if outcome.prediction_id in by_id]
         settled_ids = {outcome.prediction_id for outcome in verified}
         pending = [
@@ -40,7 +41,9 @@ class ReportBuilder:
                 "code": item.code,
                 "name": item.name,
                 "kind": item.kind,
-                "reason": "not_due_or_missing_bar",
+                "reason": settlement_metadata["pending"].get(
+                    item.prediction_id, "not_due_or_missing_bar"
+                ),
             }
             for item in sorted(predictions, key=lambda item: item.prediction_id)
             if item.prediction_id not in settled_ids
@@ -67,6 +70,7 @@ class ReportBuilder:
             "maximum_errors": self._maximum_errors(verified, by_id),
             "failed_stocks": self._failed_stocks(verified, by_id),
             "pending_predictions": pending,
+            "settlement_warnings": settlement_metadata["warnings"],
             "stage_trend": stage_rows,
         }
 
@@ -112,11 +116,35 @@ class ReportBuilder:
 
     @staticmethod
     def _failed_stocks(outcomes, by_id) -> list[dict]:
-        return [
-            {"prediction_id": item.prediction_id, "code": by_id[item.prediction_id].code, "name": by_id[item.prediction_id].name, "actual_direction": item.actual_direction}
-            for item in sorted(outcomes, key=lambda item: item.prediction_id)
-            if item.agent_error and item.agent_error.direction_hit is False
-        ]
+        failures = []
+        for item in sorted(outcomes, key=lambda item: item.prediction_id):
+            failed_models = [
+                model for model in ("agent", "lstm")
+                if getattr(item, f"{model}_error").direction_hit is False
+            ]
+            if failed_models:
+                failures.append({
+                    "prediction_id": item.prediction_id,
+                    "code": by_id[item.prediction_id].code,
+                    "name": by_id[item.prediction_id].name,
+                    "actual_direction": item.actual_direction,
+                    "failed_models": failed_models,
+                })
+        return failures
+
+    def _settlement_metadata(self) -> dict[str, dict]:
+        path = self.storage.root / "settlement_pending.json"
+        if not path.exists():
+            return {"pending": {}, "warnings": {}}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            pending = payload.get("pending", {})
+            warnings = payload.get("warnings", {})
+            if isinstance(pending, dict) and isinstance(warnings, dict):
+                return {"pending": pending, "warnings": warnings}
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+        return {"pending": {}, "warnings": {}}
 
     @staticmethod
     def _stage_rows(predictions, outcomes_by_id) -> list[dict]:

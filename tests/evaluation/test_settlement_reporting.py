@@ -60,6 +60,16 @@ class FakeMarket:
         )
 
 
+class QfqGapMarket(FakeMarket):
+    def qfq_history(self, code: str, days: int, end_date: date) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"date": "2026-07-14", "close": 100.0},
+                {"date": "2026-07-15", "close": 100.0},
+            ]
+        )
+
+
 def make_service(actual_close: float | None = 102.0, *, corporate_action: bool = False):
     root = TemporaryDirectory(dir=Path.cwd())
     storage = EvaluationStorage(Path(root.name))
@@ -101,6 +111,48 @@ class SettlementReportingTests(unittest.TestCase):
         self.addCleanup(root.cleanup)
 
         self.assertTrue(service.settle_due(date(2026, 7, 15))[0].corporate_action)
+
+    def test_provider_without_qfq_history_settles_and_records_warning(self):
+        service, storage, root = make_service(actual_close=102.0)
+        self.addCleanup(root.cleanup)
+
+        outcome = service.settle_due(date(2026, 7, 15))[0]
+
+        self.assertFalse(outcome.corporate_action)
+        metadata = json.loads((Path(root.name) / "settlement_pending.json").read_text(encoding="utf-8"))
+        self.assertIn("corporate_action_qfq_unavailable", metadata["warnings"]["p1"])
+
+    def test_qfq_return_gap_marks_corporate_action(self):
+        service, storage, root = make_service(actual_close=110.0)
+        self.addCleanup(root.cleanup)
+        service.market_data = QfqGapMarket(actual_close=110.0)
+
+        self.assertTrue(service.settle_due(date(2026, 7, 15))[0].corporate_action)
+
+    def test_invalid_target_ohlc_stays_pending_without_fabricated_values(self):
+        service, storage, root = make_service(actual_close=102.0)
+        self.addCleanup(root.cleanup)
+        original = service.market_data.raw_history
+
+        def raw_history(code: str, days: int, end_date: date) -> pd.DataFrame:
+            history = original(code, days, end_date)
+            history.loc[history["date"] == "2026-07-15", "high"] = float("nan")
+            return history
+
+        service.market_data.raw_history = raw_history
+        self.assertEqual(service.settle_due(date(2026, 7, 15)), [])
+        self.assertEqual(service.pending_reasons, {"p1": "invalid_target_ohlc"})
+        self.assertEqual(storage.load_outcomes(), [])
+
+    def test_pending_reason_is_persisted_for_later_report_builds(self):
+        service, storage, root = make_service(actual_close=None)
+        self.addCleanup(root.cleanup)
+        service.settle_due(date(2026, 7, 15))
+
+        json_path, _ = ReportBuilder(storage, Path(root.name) / "reports", pool_size=20).build()
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["pending_predictions"][0]["reason"], "missing_target_bar")
 
     def test_report_is_reproducible_utf8_and_contains_required_sections(self):
         service, storage, root = make_service(actual_close=102.0)
@@ -148,6 +200,19 @@ class SettlementReportingTests(unittest.TestCase):
             self.assertEqual(payload["samples"], 0)
             self.assertIsNone(payload["metrics"]["agent"]["mae"])
             self.assertEqual(payload["pending_predictions"][0]["reason"], "not_due_or_missing_bar")
+
+    def test_failed_stocks_identifies_lstm_only_direction_miss(self):
+        service, storage, root = make_service(actual_close=102.0)
+        self.addCleanup(root.cleanup)
+        service.settle_due(date(2026, 7, 15))
+
+        json_path, _ = ReportBuilder(storage, Path(root.name) / "reports", pool_size=20).build()
+        failures = json.loads(json_path.read_text(encoding="utf-8"))["failed_stocks"]
+
+        self.assertEqual(failures, [{
+            "prediction_id": "p1", "code": "600519", "name": "贵州茅台",
+            "actual_direction": "up", "failed_models": ["lstm"],
+        }])
 
 
 if __name__ == "__main__":
