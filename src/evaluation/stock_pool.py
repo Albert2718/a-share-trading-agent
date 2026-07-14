@@ -25,6 +25,8 @@ class PoolMarketData(Protocol):
 
     def industry_map(self) -> dict[str, str]: ...
 
+    def trade_dates(self) -> list[date]: ...
+
     def raw_history(self, code: str, days: int, end_date: date) -> pd.DataFrame: ...
 
 
@@ -41,6 +43,9 @@ class StockPoolManager:
             raise RuntimeError("CSI 300 constituent list is empty")
 
         end_date = selected_at.date()
+        expected_trade_date = self._latest_trade_date(
+            self.provider.trade_dates(), end_date
+        )
         candidates = []
         source_dates = [
             source_date
@@ -57,7 +62,14 @@ class StockPoolManager:
             if self._excluded_name(name) or not industry:
                 continue
             history = self.provider.raw_history(code, RAW_HISTORY_DAYS, end_date)
-            candidate = self._candidate_from_history(code, name, industry, history, selected_at)
+            candidate = self._candidate_from_history(
+                code,
+                name,
+                industry,
+                history,
+                selected_at,
+                expected_trade_date,
+            )
             if candidate is not None:
                 candidates.append(candidate)
 
@@ -147,6 +159,7 @@ class StockPoolManager:
         industry: str,
         history: pd.DataFrame,
         selected_at: datetime,
+        expected_trade_date: date,
     ) -> StockPoolEntry | None:
         if not isinstance(history, pd.DataFrame) or history.empty:
             return None
@@ -157,6 +170,16 @@ class StockPoolManager:
         frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
         for column in ("close", "volume"):
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        last_row = frame.iloc[-1]
+        last_close = last_row["close"]
+        if (
+            pd.isna(last_row["date"])
+            or pd.isna(last_close)
+            or not math.isfinite(float(last_close))
+            or float(last_close) <= 0
+            or last_row["date"].date() != expected_trade_date
+        ):
+            return None
         valid = frame.dropna(subset=["date", "close", "volume"])
         if len(valid) < MIN_VALID_ROWS or valid.empty:
             return None
@@ -224,6 +247,17 @@ class StockPoolManager:
             return value.replace(year=value.year - 2)
         except ValueError:
             return value.replace(year=value.year - 2, day=28)
+
+    @classmethod
+    def _latest_trade_date(cls, values: list[date], as_of: date) -> date:
+        eligible = [
+            parsed
+            for value in values
+            if (parsed := cls._parse_date(value)) is not None and parsed <= as_of
+        ]
+        if not eligible:
+            raise RuntimeError(f"no trade date on or before {as_of.isoformat()}")
+        return max(eligible)
 
     @staticmethod
     def _entry_payload(entry: StockPoolEntry) -> dict[str, Any]:

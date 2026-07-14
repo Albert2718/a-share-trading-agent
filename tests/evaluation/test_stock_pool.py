@@ -31,6 +31,7 @@ class FakePoolProvider:
         self.constituent_calls = 0
         self.industry_calls = 0
         self.history_calls = 0
+        self.trade_date_calls = 0
 
     def csi300_constituents(self):
         self.constituent_calls += 1
@@ -49,6 +50,10 @@ class FakePoolProvider:
             f"{number:06d}": f"Industry {number % self.industry_count:02d}"
             for number in range(1, self.candidate_count + 1)
         }
+
+    def trade_dates(self):
+        self.trade_date_calls += 1
+        return [date(2026, 7, 13), date(2026, 7, 14)]
 
     def raw_history(self, code, days, end_date):
         self.history_calls += 1
@@ -118,6 +123,17 @@ class FakeEvaluationAkshare:
 
     def tool_trade_date_hist_sina(self):
         return self.trade_calendar
+
+
+class FakeHistoricalMarketData:
+    def __init__(self):
+        self.calls = []
+
+    def history(self, code, **kwargs):
+        self.calls.append({"code": code, **kwargs})
+        return pd.DataFrame(
+            [{"date": "2026-07-14", "close": 10.0, "volume": 100.0}]
+        )
 
 
 class StockPoolTests(unittest.TestCase):
@@ -255,6 +271,63 @@ class StockPoolTests(unittest.TestCase):
 
                 self.assertEqual(manager._liquidity_sources, {})
 
+    def test_rejects_candidate_when_only_newest_close_is_null(self):
+        provider = FakePoolProvider(candidate_count=21, industry_count=21)
+        original_history = provider.raw_history
+
+        def raw_history(code, days, end_date):
+            history = original_history(code, days, end_date)
+            if code == "000021":
+                history.loc[history.index[-1], "close"] = float("nan")
+            return history
+
+        provider.raw_history = raw_history
+
+        entries = StockPoolManager(provider).select(selected_at=FIXED_TIME)
+
+        self.assertEqual(len(entries), 20)
+        self.assertNotIn("000021", {entry.code for entry in entries})
+
+    def test_rejects_candidate_whose_last_row_predates_expected_trade_date(self):
+        provider = FakePoolProvider(candidate_count=21, industry_count=21)
+        original_history = provider.raw_history
+
+        def raw_history(code, days, end_date):
+            history = original_history(code, days, end_date)
+            if code == "000021":
+                history.loc[history.index[-1], "date"] = pd.Timestamp("2026-07-13")
+            return history
+
+        provider.raw_history = raw_history
+
+        entries = StockPoolManager(provider).select(selected_at=FIXED_TIME)
+
+        self.assertEqual(len(entries), 20)
+        self.assertNotIn("000021", {entry.code for entry in entries})
+
+    def test_uses_latest_trade_date_on_nontrading_selected_date(self):
+        provider = FakePoolProvider(candidate_count=20, industry_count=20)
+        original_history = provider.raw_history
+        calendar_calls = []
+
+        def trade_dates():
+            calendar_calls.append(True)
+            return [date(2026, 7, 14)]
+
+        provider.trade_dates = trade_dates
+
+        def raw_history(code, days, end_date):
+            return original_history(code, days, date(2026, 7, 14))
+
+        provider.raw_history = raw_history
+
+        entries = StockPoolManager(provider).select(
+            selected_at=datetime(2026, 7, 15, 16, 0, 0)
+        )
+
+        self.assertEqual(len(entries), 20)
+        self.assertEqual(calendar_calls, [True])
+
 
 class EvaluationMarketDataTests(unittest.TestCase):
     def make_adapter(self, akshare=None, data_access=None):
@@ -325,6 +398,18 @@ class EvaluationMarketDataTests(unittest.TestCase):
                 akshare.industry_members = members
                 with self.assertRaises(RuntimeError):
                     self.make_adapter(akshare=akshare).industry_map()
+
+    def test_raw_history_disables_inner_stale_cache_fallback(self):
+        market_data = FakeHistoricalMarketData()
+        adapter = EvaluationMarketData(
+            data_access=FakeDataAccess(),
+            market_data=market_data,
+            now_fn=lambda: FIXED_TIME,
+        )
+
+        adapter.raw_history("600519", days=60, end_date=date(2026, 7, 14))
+
+        self.assertFalse(market_data.calls[0]["allow_stale_fallback"])
 
     def test_requirements_pin_verified_akshare_version(self):
         requirements = (

@@ -19,6 +19,23 @@ class _DataAccess:
         return loader()
 
 
+class _RecordingDataAccess(_DataAccess):
+    def __init__(self):
+        self.calls = []
+
+    def fetch(self, namespace, endpoint, key, ttl_seconds, min_interval, loader, **kwargs):
+        self.calls.append({"endpoint": endpoint, "kwargs": kwargs})
+        return super().fetch(
+            namespace,
+            endpoint,
+            key,
+            ttl_seconds,
+            min_interval,
+            loader,
+            **kwargs,
+        )
+
+
 class _CachedRealtimeDataAccess:
     def fetch(self, namespace, endpoint, key, ttl_seconds, min_interval, loader, **kwargs):
         return {
@@ -239,6 +256,28 @@ class SharedToolTests(unittest.TestCase):
         tool.history("600519")
 
         self.assertEqual(akshare.calls[0]["adjust"], "qfq")
+
+    def test_history_defaults_to_stale_cache_compatibility(self):
+        data_access = _RecordingDataAccess()
+        tool = AkshareMarketData(data_access=data_access)
+        tool._ak = _HistoryAkshare()
+
+        tool.history("600519", end_date=date(2026, 7, 14))
+
+        self.assertEqual(data_access.calls[0]["kwargs"].get("fallback", "cache"), "cache")
+
+    def test_history_can_disable_stale_cache_fallback(self):
+        data_access = _RecordingDataAccess()
+        tool = AkshareMarketData(data_access=data_access)
+        tool._ak = _HistoryAkshare()
+
+        tool.history(
+            "600519",
+            end_date=date(2026, 7, 14),
+            allow_stale_fallback=False,
+        )
+
+        self.assertEqual(data_access.calls[0]["kwargs"]["fallback"], "raise")
 
     def test_history_preserves_absent_amount_column(self):
         tool = AkshareMarketData(data_access=_DataAccess())

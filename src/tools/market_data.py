@@ -137,6 +137,7 @@ class AkshareMarketData:
         days: int = 160,
         adjust: str = "qfq",
         end_date: date | str | None = None,
+        allow_stale_fallback: bool = True,
     ) -> pd.DataFrame:
         norm = normalize_a_share_code(code)
         end_value = pd.Timestamp(end_date or self._now_fn().date()).strftime("%Y%m%d")
@@ -186,7 +187,15 @@ class AkshareMarketData:
             raise RuntimeError("all history providers failed; " + " | ".join(errors[-3:]))
 
         cache_key = f"{norm}_{days}_{adjust or 'raw'}_{end_value}"
-        records = self.data_access.fetch("akshare", "stock_zh_a_hist", cache_key, 1800, 1.5, loader)
+        records = self.data_access.fetch(
+            "akshare",
+            "stock_zh_a_hist",
+            cache_key,
+            1800,
+            1.5,
+            loader,
+            fallback="cache" if allow_stale_fallback else "raise",
+        )
         return self._normalize_history(pd.DataFrame(records)).tail(days).reset_index(drop=True)
 
     def valuation(self, code: str) -> List[Dict[str, Any]]:

@@ -121,7 +121,13 @@ class EvaluationMarketData:
         cache_key = f"{norm}_{days}_{end_value:%Y%m%d}"
 
         def loader() -> list[dict[str, Any]]:
-            frame = self._market_data.history(norm, days=days, adjust="", end_date=end_value)
+            frame = self._market_data.history(
+                norm,
+                days=days,
+                adjust="",
+                end_date=end_value,
+                allow_stale_fallback=False,
+            )
             self._validate_history(frame)
             return self._records(frame)
 
