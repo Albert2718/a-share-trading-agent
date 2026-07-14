@@ -1,5 +1,6 @@
 from .calendar import next_trade_date
 from .metrics import settle_direction, summarize_metrics
+from .storage import EvaluationStorage
 from .models import (
     BatchSummary,
     EvidenceItem,
@@ -14,6 +15,7 @@ from .models import (
 __all__ = [
     "BatchSummary",
     "EvidenceItem",
+    "EvaluationStorage",
     "MetricSummary",
     "ModelError",
     "ModelForecast",
