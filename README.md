@@ -22,7 +22,6 @@
 │   └── tools/           # 行情、财务、技术、筛选、预测和深度研究工具
 ├── experiments/         # 课程实验脚本、Notebook 和训练数据
 ├── artifacts/models/    # 训练得到的模型、指标和图表
-├── docs/                # 架构、API、展示材料和课程文档
 ├── tests/               # 后续测试目录
 ├── .env.example         # 环境变量模板
 └── run_agent.py         # CLI 启动脚本
@@ -67,13 +66,3 @@ python run_agent.py cache clear
 # 查看配置状态
 python run_agent.py config status
 ```
-
-## 文档
-
-- `docs/architecture.md`: 项目架构和运行流程。
-- `docs/apis.md`: 数据源、API Key 和边界规则。
-- `docs/pre.md`、`docs/pre/`: 课程展示材料。
-
-## GitHub 上传前检查
-
-提交前确认 `.env` 未被加入 Git，并避免提交 `outputs/`、`data/cache/`、`data/memory/`、`tmp/`、`__pycache__/` 等本地生成物。
