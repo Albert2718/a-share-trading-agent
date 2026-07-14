@@ -104,6 +104,11 @@ class FakeEvaluationAkshare:
         )
         self.industry_names = pd.DataFrame([{"板块名称": "白酒"}])
         self.industry_members = {"白酒": pd.DataFrame([{"代码": "600519"}])}
+        self.sw_industries = pd.DataFrame([{"行业代码": "801120.SI", "行业名称": "食品饮料"}])
+        self.sw_members = {"801120": pd.DataFrame([{"证券代码": "600519"}])}
+        self.raw_daily = pd.DataFrame(
+            [{"date": date(2026, 7, 14), "open": 10.0, "high": 10.5, "low": 9.9, "close": 10.2, "volume": 100.0, "amount": 1020.0}]
+        )
         self.trade_calendar = pd.DataFrame(
             [{"trade_date": "2026-07-13"}, {"trade_date": "2026-07-14"}]
         )
@@ -120,6 +125,16 @@ class FakeEvaluationAkshare:
     def stock_board_industry_cons_em(self, symbol):
         self.industry_symbols.append(symbol)
         return self.industry_members[symbol]
+
+    def sw_index_first_info(self):
+        return self.sw_industries
+
+    def index_component_sw(self, symbol):
+        self.industry_symbols.append(symbol)
+        return self.sw_members[symbol]
+
+    def stock_zh_a_daily(self, symbol, start_date, end_date, adjust):
+        return self.raw_daily
 
     def tool_trade_date_hist_sina(self):
         return self.trade_calendar
@@ -396,8 +411,17 @@ class EvaluationMarketDataTests(unittest.TestCase):
                 akshare = FakeEvaluationAkshare()
                 akshare.industry_names = names
                 akshare.industry_members = members
+                akshare.sw_industries = pd.DataFrame()
                 with self.assertRaises(RuntimeError):
                     self.make_adapter(akshare=akshare).industry_map()
+
+    def test_industry_map_falls_back_to_sw_components_when_em_unavailable(self):
+        akshare = FakeEvaluationAkshare()
+        akshare.industry_names = pd.DataFrame()
+        adapter = self.make_adapter(akshare=akshare)
+
+        self.assertEqual(adapter.industry_map(), {"600519": "食品饮料"})
+        self.assertIn("801120", akshare.industry_symbols)
 
     def test_raw_history_disables_inner_stale_cache_fallback(self):
         market_data = FakeHistoricalMarketData()
@@ -410,6 +434,25 @@ class EvaluationMarketDataTests(unittest.TestCase):
         adapter.raw_history("600519", days=60, end_date=date(2026, 7, 14))
 
         self.assertFalse(market_data.calls[0]["allow_stale_fallback"])
+
+    def test_raw_history_falls_back_to_sina_daily_when_inner_history_fails(self):
+        class FailingHistoricalMarketData(FakeHistoricalMarketData):
+            def history(self, code, **kwargs):
+                self.calls.append({"code": code, **kwargs})
+                raise RuntimeError("eastmoney unavailable")
+
+        akshare = FakeEvaluationAkshare()
+        adapter = EvaluationMarketData(
+            data_access=FakeDataAccess(),
+            market_data=FailingHistoricalMarketData(),
+            now_fn=lambda: FIXED_TIME,
+        )
+        adapter._ak = akshare
+
+        history = adapter.raw_history("600519", days=60, end_date=date(2026, 7, 14))
+
+        self.assertEqual(history.iloc[-1]["close"], 10.2)
+        self.assertIn("amount", history.columns)
 
     def test_requirements_pin_verified_akshare_version(self):
         requirements = (

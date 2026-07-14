@@ -86,27 +86,10 @@ class EvaluationMarketData:
 
         def loader() -> dict[str, str]:
             ak = self._require_akshare()
-            industries = self._require_frame(ak.stock_board_industry_name_em(), "industry names")
-            name_column = self._find_column(industries, ["板块名称", "行业名称", "名称", "name"])
-            if name_column is None:
-                raise RuntimeError("industry names response has an invalid schema")
-            mapping: dict[str, str] = {}
-            for industry in industries[name_column].dropna().astype(str):
-                industry = industry.strip()
-                if not industry:
-                    continue
-                members = self._require_frame(
-                    ak.stock_board_industry_cons_em(symbol=industry),
-                    f"industry members for {industry}",
-                )
-                code_column = self._find_column(members, ["代码", "code", "证券代码"])
-                if code_column is None:
-                    raise RuntimeError(f"industry members response has an invalid schema for {industry}")
-                for value in members[code_column].dropna():
-                    mapping[normalize_a_share_code(str(value))] = industry
-            if not mapping:
-                raise RuntimeError("industry membership response is empty")
-            return mapping
+            try:
+                return self._eastmoney_industry_map(ak)
+            except Exception:
+                return self._sw_industry_map(ak)
 
         mapping = self.data_access.fetch(
             "akshare", "stock_board_industry", cache_key, 7 * 86400, 1.0, loader, fallback="raise"
@@ -115,19 +98,70 @@ class EvaluationMarketData:
             raise RuntimeError("cached industry mapping is invalid")
         return {normalize_a_share_code(str(code)): str(industry) for code, industry in mapping.items() if str(industry).strip()}
 
+    def _eastmoney_industry_map(self, ak: Any) -> dict[str, str]:
+        industries = self._require_frame(ak.stock_board_industry_name_em(), "industry names")
+        name_column = self._find_column(industries, ["板块名称", "行业名称", "名称", "name"])
+        if name_column is None:
+            raise RuntimeError("industry names response has an invalid schema")
+        mapping: dict[str, str] = {}
+        for industry in industries[name_column].dropna().astype(str):
+            industry = industry.strip()
+            if not industry:
+                continue
+            members = self._require_frame(
+                ak.stock_board_industry_cons_em(symbol=industry),
+                f"industry members for {industry}",
+            )
+            code_column = self._find_column(members, ["代码", "code", "证券代码"])
+            if code_column is None:
+                raise RuntimeError(f"industry members response has an invalid schema for {industry}")
+            for value in members[code_column].dropna():
+                mapping[normalize_a_share_code(str(value))] = industry
+        if not mapping:
+            raise RuntimeError("industry membership response is empty")
+        return mapping
+
+    def _sw_industry_map(self, ak: Any) -> dict[str, str]:
+        industries = self._require_frame(ak.sw_index_first_info(), "SW industry names")
+        code_column = self._find_column(industries, ["行业代码", "code", "指数代码"])
+        name_column = self._find_column(industries, ["行业名称", "name", "指数名称"])
+        if code_column is None or name_column is None:
+            raise RuntimeError("SW industry names response has an invalid schema")
+        mapping: dict[str, str] = {}
+        for _, row in industries.dropna(subset=[code_column, name_column]).iterrows():
+            symbol = str(row[code_column]).split(".", 1)[0].strip()
+            industry = str(row[name_column]).strip()
+            if not symbol or not industry:
+                continue
+            members = self._require_frame(
+                ak.index_component_sw(symbol=symbol),
+                f"SW industry members for {symbol}",
+            )
+            member_code_column = self._find_column(members, ["证券代码", "代码", "code"])
+            if member_code_column is None:
+                raise RuntimeError(f"SW industry members response has an invalid schema for {symbol}")
+            for value in members[member_code_column].dropna():
+                mapping[normalize_a_share_code(str(value))] = industry
+        if not mapping:
+            raise RuntimeError("SW industry membership response is empty")
+        return mapping
+
     def raw_history(self, code: str, days: int, end_date: date) -> pd.DataFrame:
         norm = normalize_a_share_code(code)
         end_value = pd.Timestamp(end_date).date()
         cache_key = f"{norm}_{days}_{end_value:%Y%m%d}"
 
         def loader() -> list[dict[str, Any]]:
-            frame = self._market_data.history(
-                norm,
-                days=days,
-                adjust="",
-                end_date=end_value,
-                allow_stale_fallback=False,
-            )
+            try:
+                frame = self._market_data.history(
+                    norm,
+                    days=days,
+                    adjust="",
+                    end_date=end_value,
+                    allow_stale_fallback=False,
+                )
+            except Exception:
+                frame = self._sina_daily_history(norm, days, end_value)
             self._validate_history(frame)
             return self._records(frame)
 
@@ -137,6 +171,23 @@ class EvaluationMarketData:
         frame = pd.DataFrame(records)
         self._validate_history(frame)
         return frame
+
+    def _sina_daily_history(self, code: str, days: int, end_date: date) -> pd.DataFrame:
+        ak = self._require_akshare()
+        prefix = "sh" if code.startswith(("5", "6", "9")) else "sz"
+        start_date = (
+            pd.Timestamp(end_date) - pd.Timedelta(days=max(days * 3, 30))
+        ).strftime("%Y%m%d")
+        frame = self._require_frame(
+            ak.stock_zh_a_daily(
+                symbol=f"{prefix}{code}",
+                start_date=start_date,
+                end_date=pd.Timestamp(end_date).strftime("%Y%m%d"),
+                adjust="",
+            ),
+            f"daily history for {code}",
+        )
+        return frame.tail(days).copy()
 
     def _load_akshare(self):
         if self._ak is not None:
