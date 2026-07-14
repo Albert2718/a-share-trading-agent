@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from types import MappingProxyType
@@ -8,21 +9,29 @@ from typing import Any
 
 
 def _freeze_metadata(value: Any) -> Any:
+    if isinstance(value, (set, frozenset)):
+        raise TypeError("metadata set and frozenset values are not JSON-compatible")
     if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("metadata mapping keys must be strings")
         return MappingProxyType(
-            {key: _freeze_metadata(item) for key, item in value.items()}
+            {key: _freeze_metadata(value[key]) for key in sorted(value)}
         )
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_metadata(item) for item in value)
-    if isinstance(value, (set, frozenset)):
-        return frozenset(_freeze_metadata(item) for item in value)
-    return value
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("metadata floats must be finite")
+        return value
+    raise TypeError(f"unsupported metadata value type: {type(value).__name__}")
 
 
 def _thaw_metadata(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {key: _thaw_metadata(item) for key, item in value.items()}
-    if isinstance(value, (tuple, frozenset)):
+    if isinstance(value, tuple):
         return [_thaw_metadata(item) for item in value]
     return value
 
@@ -49,10 +58,17 @@ class EvidenceItem:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.metadata, Mapping):
+            raise TypeError("metadata must be a mapping")
         object.__setattr__(self, "metadata", _freeze_metadata(self.metadata))
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-compatible snapshot of this evidence item."""
+        """Return a JSON-compatible snapshot.
+
+        Metadata dicts and scalar values retain their JSON types. Input lists
+        and tuples are frozen as tuples internally and emitted as JSON arrays,
+        preserving nested values and order.
+        """
         return {
             "source": self.source,
             "summary": self.summary,

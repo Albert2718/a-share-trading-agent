@@ -113,6 +113,46 @@ class CalendarMetricTests(unittest.TestCase):
         self.assertEqual(serialized["published_at"], "2026-07-17T09:30:00")
         self.assertEqual(serialized["retrieved_at"], "2026-07-17T10:15:30")
 
+    def test_evidence_metadata_rejects_sets_recursively(self):
+        for value in ({"market"}, frozenset({"market"})):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                TypeError, "set and frozenset"
+            ):
+                EvidenceItem(source="report", metadata={"nested": [value]})
+
+    def test_evidence_metadata_preserves_json_compatible_nested_values(self):
+        evidence = EvidenceItem(
+            source="report",
+            metadata={
+                "dict": {"enabled": True, "missing": None},
+                "list": [1, 2.5, "three"],
+                "tuple": ("first", {"second": 2}),
+            },
+        )
+
+        serialized = json.loads(json.dumps(evidence.to_dict(), sort_keys=True))
+
+        self.assertEqual(serialized["metadata"], {
+            "dict": {"enabled": True, "missing": None},
+            "list": [1, 2.5, "three"],
+            "tuple": ["first", {"second": 2}],
+        })
+
+    def test_evidence_metadata_serialization_is_deterministic(self):
+        first = EvidenceItem(
+            source="report",
+            metadata={"z": 1, "a": {"y": 2, "b": 3}},
+        )
+        second = EvidenceItem(
+            source="report",
+            metadata={"a": {"b": 3, "y": 2}, "z": 1},
+        )
+
+        self.assertEqual(
+            json.dumps(first.to_dict(), ensure_ascii=False),
+            json.dumps(second.to_dict(), ensure_ascii=False),
+        )
+
     def test_next_trade_date_skips_weekend(self):
         dates = [date(2026, 7, 17), date(2026, 7, 20)]
         self.assertEqual(next_trade_date(dates, date(2026, 7, 17)), date(2026, 7, 20))

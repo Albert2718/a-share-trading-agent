@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -10,7 +11,12 @@ from src.evaluation.models import EvidenceItem, ModelForecast, OutcomeRecord, Pr
 from src.evaluation.storage import EvaluationStorage
 
 
-def sample_prediction(prediction_id: str) -> PredictionRecord:
+def sample_prediction(
+    prediction_id: str,
+    *,
+    code: str = "600519",
+    kind: str = "next_day",
+) -> PredictionRecord:
     forecast = ModelForecast(
         direction="up",
         expected_return=0.03,
@@ -21,12 +27,12 @@ def sample_prediction(prediction_id: str) -> PredictionRecord:
     )
     return PredictionRecord(
         prediction_id=prediction_id,
-        kind=f"next_day_{prediction_id.replace(':', '_')}",
+        kind=kind,
         rule_version="v1",
         generated_at=datetime(2026, 7, 14, 8, 30),
         as_of_trade_date=date(2026, 7, 14),
         target_trade_date=date(2026, 7, 15),
-        code="600519",
+        code=code,
         name="贵州茅台",
         industry="白酒",
         current_close=120.0,
@@ -80,7 +86,7 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(loaded, [record])
             self.assertEqual(
                 json.loads(
-                    (Path(root) / "predictions" / "2026-07-14" / "600519-next_day_p1.json")
+                    (Path(root) / "predictions" / "2026-07-14" / "600519-next_day.json")
                     .read_text(encoding="utf-8")
                 )["evidence"][0]["summary"],
                 "经营情况稳定",
@@ -90,12 +96,61 @@ class StorageTests(unittest.TestCase):
         with TemporaryDirectory() as root:
             storage = EvaluationStorage(Path(root))
             first = storage.append_prediction(sample_prediction("p1"))
-            second = storage.append_prediction(sample_prediction("p2"))
+            second = storage.append_prediction(sample_prediction("p2", code="000001"))
             first_data = json.loads(first.read_text(encoding="utf-8"))
             second_data = json.loads(second.read_text(encoding="utf-8"))
 
+            self.assertEqual(first_data["sequence"], 1)
+            self.assertEqual(second_data["sequence"], 2)
             self.assertEqual(second_data["previous_hash"], first_data["content_hash"])
+            self.assertEqual(
+                [record.prediction_id for record in storage.load_predictions()],
+                ["p1", "p2"],
+            )
             self.assertTrue(storage.verify_chain()["ok"])
+
+    def test_manifest_detects_deleted_tail_record(self):
+        with TemporaryDirectory() as root:
+            storage = EvaluationStorage(Path(root))
+            storage.append_prediction(sample_prediction("p1"))
+            tail = storage.append_prediction(sample_prediction("p2", code="000001"))
+            manifest_path = Path(root) / "predictions" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            tail_payload = json.loads(tail.read_text(encoding="utf-8"))
+
+            self.assertEqual(manifest, {
+                "count": 2,
+                "final_hash": tail_payload["content_hash"],
+            })
+            tail.unlink()
+
+            verification = storage.verify_chain()
+            self.assertFalse(verification["ok"])
+            self.assertEqual(verification["chain"], "predictions")
+
+    def test_prediction_path_rejects_unsafe_code_and_kind(self):
+        with TemporaryDirectory() as root:
+            storage = EvaluationStorage(Path(root))
+            base = sample_prediction("p1")
+
+            for code in ("12345", "1234567", "123/45", "../001", "１２３４５６"):
+                with self.subTest(code=code), self.assertRaises(ValueError):
+                    storage.append_prediction(replace(base, code=code))
+            for kind in ("next/day", "../stage", "..", "next_day_extra"):
+                with self.subTest(kind=kind), self.assertRaises(ValueError):
+                    storage.append_prediction(replace(base, kind=kind))
+
+            self.assertFalse((Path(root) / "predictions").exists())
+
+    def test_prediction_path_resolves_inside_prediction_root(self):
+        with TemporaryDirectory() as root:
+            storage = EvaluationStorage(Path(root))
+
+            path = storage.append_prediction(sample_prediction("p1", kind="stage"))
+
+            self.assertTrue(
+                path.resolve().is_relative_to((Path(root) / "predictions").resolve())
+            )
 
     def test_tampered_record_breaks_chain_and_is_rejected(self):
         with TemporaryDirectory() as root:
@@ -110,6 +165,35 @@ class StorageTests(unittest.TestCase):
             self.assertFalse(verification["ok"])
             with self.assertRaises(ValueError):
                 storage.load_predictions()
+
+    def test_prediction_operations_reject_a_broken_prediction_chain(self):
+        with TemporaryDirectory() as root:
+            storage = EvaluationStorage(Path(root))
+            path = storage.append_prediction(sample_prediction("p1"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["name"] = "被篡改"
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                storage.append_prediction(sample_prediction("p2", code="000001"))
+            with self.assertRaises(ValueError):
+                storage.append_outcome(sample_outcome("p1"))
+            with self.assertRaises(ValueError):
+                storage.prediction_exists("p1")
+
+    def test_outcome_operations_reject_a_broken_outcome_chain(self):
+        with TemporaryDirectory() as root:
+            storage = EvaluationStorage(Path(root))
+            storage.append_prediction(sample_prediction("p1"))
+            path = storage.append_outcome(sample_outcome("p1"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["actual_close"] = 1.0
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                storage.append_outcome(sample_outcome("p2"))
+            with self.assertRaises(ValueError):
+                storage.load_outcomes()
 
     def test_prediction_exists_and_outcomes_use_a_separate_chain(self):
         with TemporaryDirectory() as root:
