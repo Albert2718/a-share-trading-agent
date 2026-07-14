@@ -7,6 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from ..prompts import NEWS_ANALYST_SYSTEM
 from ..schemas import AnalysisContext, EventCard, NewsReport, StockCandidate
+from ..utils import redact_recursive
 from src.core import DataAccessLayer, LLMClient, load_config
 from src.tools.market_data import AkshareMarketData
 from src.tools.news_search import NewsSearchTool
@@ -252,7 +253,10 @@ class NewsAnalyst:
             llm = self.llm_client or LLMClient(model=self.news_agent_model)
             payload = llm.structured(
                 system_prompt=NEWS_ANALYST_SYSTEM,
-                user_payload={"stock": {"code": candidate.code, "name": candidate.name}, "news": compact_items},
+                user_payload=redact_recursive({
+                    "stock": {"code": candidate.code, "name": candidate.name},
+                    "news": compact_items,
+                }),
                 schema=schema,
                 max_tokens=900,
             )

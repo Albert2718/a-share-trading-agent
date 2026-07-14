@@ -8,6 +8,7 @@ import pandas as pd
 from src.agents.research.orchestrator import ResearchOrchestrator
 from src.agents.research.schemas import (
     AnalysisContext,
+    EventCard,
     FinalReport,
     FundamentalReport,
     NewsReport,
@@ -16,6 +17,7 @@ from src.agents.research.schemas import (
     StockCandidate,
     StockDecision,
 )
+from src.agents.research.analysts.cio import CIOAgent
 from src.agents.research.tool import DeepResearchTool
 from src.agents.research.analysts.sentiment import SentimentAnalyst
 from src.agents.research.analysts.news import NewsAnalyst
@@ -133,6 +135,24 @@ class _FutureEventLLM(_RecordingStructuredLLM):
             "published_at": "2026-07-14T19:00:00+08:00",
             "source": "news.example",
         }]}
+
+
+class _CapturingCIOLLM:
+    model = "research-cio-model"
+
+    def __init__(self):
+        self.payload = None
+
+    def structured(self, **kwargs):
+        self.payload = kwargs["user_payload"]
+        return {
+            "action": "watch",
+            "confidence": 0.5,
+            "position_bias": "5%",
+            "top_reasons": ["sanitized evidence", "bounded risk"],
+            "risk_flags": [],
+            "invalidation_conditions": ["refresh evidence"],
+        }
 
 
 class _CIO:
@@ -302,6 +322,71 @@ class ResearchToolTests(unittest.TestCase):
 
         self.assertEqual(report.events, [])
         self.assertIn("news_after_cutoff", report.error)
+
+    def test_cio_llm_payload_and_decision_snapshots_redact_credentials(self):
+        llm = _CapturingCIOLLM()
+        analyst = CIOAgent(openai_api_key="enabled", llm_client=llm)
+        secret_text = (
+            "Authorization: Bearer bearer-secret; "
+            "client_secret=client-secret; "
+            "openai_api_key=sk-openai-secret; "
+            "https://user:userinfo-secret@cio.example/path?token=query-secret&api_key=api-secret"
+        )
+
+        decision = analyst.decide_one(
+            QuantReport(
+                code="600519",
+                name="贵州茅台",
+                status="error",
+                error=f"quant failed {secret_text}",
+            ),
+            FundamentalReport(
+                code="600519",
+                name="贵州茅台",
+                status="ok",
+                key_factors=[f"factor {secret_text}"],
+            ),
+            NewsReport(
+                code="600519",
+                name="贵州茅台",
+                status="ok",
+                events=[
+                    EventCard(
+                        summary=f"event {secret_text}",
+                        source="https://user:userinfo-secret@news.example/item?token=query-secret",
+                    )
+                ],
+                error=f"news warning {secret_text}",
+            ),
+            SentimentReport(
+                code="600519",
+                name="贵州茅台",
+                status="error",
+                error=f"sentiment failed {secret_text}",
+            ),
+            use_llm=True,
+        )
+
+        serialized_payload = str(llm.payload).lower()
+        serialized_decision = str({
+            "quant": decision.quant,
+            "fundamental": decision.fundamental,
+            "news": decision.news,
+            "sentiment": decision.sentiment,
+        }).lower()
+        for serialized in (serialized_payload, serialized_decision):
+            for secret in (
+                "bearer-secret",
+                "client-secret",
+                "sk-openai-secret",
+                "userinfo-secret",
+                "query-secret",
+                "api-secret",
+                "user:userinfo-secret",
+            ):
+                self.assertNotIn(secret, serialized)
+            self.assertIn("[redacted]", serialized)
+            self.assertIn("cio.example/path", serialized)
 
     def test_composite_tool_preserves_chat_payload(self):
         result = DeepResearchTool(_CompositeOrchestrator()).run("SH.600519", depth="full")

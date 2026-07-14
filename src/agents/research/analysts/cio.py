@@ -13,7 +13,7 @@ from ..schemas import (
     StockDecision,
     to_dict,
 )
-from ..utils import now_display
+from ..utils import now_display, redact_recursive
 from src.core import LLMClient, load_config
 from src.tools.utils import clamp
 
@@ -167,7 +167,7 @@ class CIOAgent:
                     ],
                 },
             }
-            payload = {
+            payload = redact_recursive({
                 "risk_profile": risk_profile,
                 "reports": {
                     "quant": to_dict(quant),
@@ -177,7 +177,7 @@ class CIOAgent:
                 },
                 "rule_baseline": to_dict(rule_decision),
                 "instruction": "Use the four reports to make the final CIO decision. Do not invent facts not present in the reports.",
-            }
+            })
             llm = self.llm_client or LLMClient(model=self.model)
             data = llm.structured(
                 system_prompt=CIO_AGENT_SYSTEM,
@@ -200,10 +200,10 @@ class CIOAgent:
                 top_reasons=[str(item) for item in data.get("top_reasons", [])][:3],
                 risk_flags=[str(item) for item in data.get("risk_flags", [])][:5],
                 invalidation_conditions=[str(item) for item in data.get("invalidation_conditions", [])][:4],
-                quant=asdict(quant),
-                fundamental=asdict(fundamental),
-                news=asdict(news),
-                sentiment=asdict(sentiment),
+                quant=redact_recursive(asdict(quant)),
+                fundamental=redact_recursive(asdict(fundamental)),
+                news=redact_recursive(asdict(news)),
+                sentiment=redact_recursive(asdict(sentiment)),
             )
         except Exception:
             return None
