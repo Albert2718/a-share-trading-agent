@@ -20,6 +20,7 @@ data/memory/*.json
 /.local/
 /datasets/
 /.ipynb_checkpoints/
+/.worktrees/
 /ref1-fin-agent-master/
 /ref2-stock-ai-assistant-langGraph-main/
 core.*
