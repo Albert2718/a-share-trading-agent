@@ -233,6 +233,22 @@ class SettlementReportingTests(unittest.TestCase):
             self.assertIsNone(payload["metrics"]["agent"]["mae"])
             self.assertEqual(payload["pending_predictions"][0]["reason"], "not_due_or_missing_bar")
 
+    def test_prediction_coverage_counts_each_prediction_kind(self):
+        with TemporaryDirectory(dir=Path.cwd()) as root:
+            storage = EvaluationStorage(Path(root) / "data")
+            for index in range(20):
+                code = f"600{index:03d}"
+                storage.append_prediction(prediction(f"next_day:{code}", kind="next_day", code=code))
+                storage.append_prediction(
+                    prediction(f"stage:{code}", kind="stage", target=date(2026, 7, 23), code=code)
+                )
+
+            json_path, _ = ReportBuilder(storage, Path(root) / "reports", pool_size=20).build()
+            coverage = json.loads(json_path.read_text(encoding="utf-8"))["coverage"]
+
+            self.assertEqual(coverage["expected_predictions"], 40)
+            self.assertEqual(coverage["prediction_rate"], 1.0)
+
     def test_failed_stocks_identifies_lstm_only_direction_miss(self):
         service, storage, root = make_service(actual_close=102.0)
         self.addCleanup(root.cleanup)

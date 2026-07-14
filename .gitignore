@@ -14,6 +14,10 @@ tmp/
 data/cache/
 data/memory/*.json
 evaluation/data/
+evaluation/predictions/
+evaluation/outcomes/
+evaluation/batches/
+evaluation/settlement_pending.json
 evaluation/reports/
 /.localenv/
 /.venv/

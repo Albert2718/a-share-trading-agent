@@ -140,14 +140,7 @@ class EvaluationForecaster:
             "reports": llm_reports,
             "warnings": list(warnings),
         })
-        response = self.llm_client.structured(
-            system_prompt=FORECAST_SYSTEM_PROMPT,
-            user_payload=payload,
-            schema=FORECAST_SCHEMA,
-            temperature=0,
-            max_tokens=1200,
-        )
-        draft = _parse_research_draft(response)
+        draft = self._structured_research_draft(payload)
 
         closes = history["close"].to_numpy(dtype=float)
         lstm_return = self.lstm_predictor.predict_return(closes[-14:])
@@ -207,6 +200,24 @@ class EvaluationForecaster:
             catalysts=draft.catalysts if stage else (),
             risks=draft.risks if stage else (),
         )
+
+    def _structured_research_draft(self, payload: dict[str, Any]) -> ResearchDraft:
+        last_error: RuntimeError | None = None
+        for _ in range(2):
+            response = self.llm_client.structured(
+                system_prompt=FORECAST_SYSTEM_PROMPT,
+                user_payload=payload,
+                schema=FORECAST_SCHEMA,
+                temperature=0,
+                max_tokens=1200,
+            )
+            try:
+                return _parse_research_draft(response)
+            except RuntimeError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("malformed structured forecast")
 
     def _load_history(
         self, code: str, as_of: date

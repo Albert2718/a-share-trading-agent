@@ -53,6 +53,8 @@ class FakeLLM:
     def structured(self, **kwargs):
         self.calls.append(kwargs)
         self.payload = kwargs["user_payload"]
+        if isinstance(self.response, list):
+            return self.response.pop(0)
         return self.response
 
 
@@ -400,6 +402,18 @@ class ForecastingTests(unittest.TestCase):
             forecaster.forecast(
                 ENTRY, AS_OF, TARGET, "next_day", generated_at=GENERATED_AT
             )
+
+    def test_malformed_llm_output_is_retried_once(self):
+        forecaster, llm, _ = make_forecaster(
+            llm_response=[{"expected_return": "invalid"}, valid_llm_response()]
+        )
+
+        record = forecaster.forecast(
+            ENTRY, AS_OF, TARGET, "next_day", generated_at=GENERATED_AT
+        )
+
+        self.assertEqual(record.code, ENTRY.code)
+        self.assertEqual(len(llm.calls), 2)
 
     def test_forecast_uses_full_research_context_and_exact_as_of_history(self):
         forecaster, _, orchestrator = make_forecaster()

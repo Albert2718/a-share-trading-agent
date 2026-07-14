@@ -41,7 +41,7 @@
 └── run_agent.py         # CLI 启动脚本
 ```
 
-本地生成目录不会提交到 Git：`outputs/` 存放运行报告，`data/cache/` 存放 AKShare/Tavily 缓存，`data/memory/` 存放用户运行时状态，`tmp/` 存放临时渲染和编译结果，`evaluation/data/` 和 `evaluation/reports/` 存放现实性评测的本地记录与报告。`evaluation/stock_pool.json` 是首次运行冻结的 20 股股票池，可以提交以保证答辩复现。
+本地生成目录不会提交到 Git：`outputs/` 存放运行报告，`data/cache/` 存放 AKShare/Tavily 缓存，`data/memory/` 存放用户运行时状态，`tmp/` 存放临时渲染和编译结果，`evaluation/predictions/`、`evaluation/outcomes/`、`evaluation/batches/` 和 `evaluation/reports/` 存放现实性评测的本地记录与报告。`evaluation/stock_pool.json` 是首次运行冻结的 20 股股票池，可以提交以保证答辩复现。
 
 ## 快速开始
 
@@ -93,7 +93,7 @@ python run_agent.py evaluate report
 
 每日评测只记录下一交易日的看涨/看跌、预计收盘价、预计涨跌幅、价格区间和置信度。完整 Agent 的预测由深度研究证据生成，并与本地 LSTM 参考结果按 85%/15% 融合。系统同时保存 2026-07-14 到 2026-07-23 的阶段趋势观点，7 月 23 日收盘后可对照阶段判断。
 
-`evaluation/data/` 中的预测和结算记录是不可覆盖 JSON，`evaluation/reports/summary.md` 和 `summary.json` 是可重复生成的本地报告。该评测不模拟买入卖出，不计算交易收益或最大回撤；7/14-7/23 结果是阶段趋势评测，不等同于长期收益证明。
+`evaluation/predictions/` 和 `evaluation/outcomes/` 中的预测和结算记录是不可覆盖 JSON，`evaluation/reports/summary.md` 和 `summary.json` 是可重复生成的本地报告。该评测不模拟买入卖出，不计算交易收益或最大回撤；7/14-7/23 结果是阶段趋势评测，不等同于长期收益证明。
 
 ## 测试
 

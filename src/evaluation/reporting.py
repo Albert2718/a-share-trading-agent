@@ -51,13 +51,17 @@ class ReportBuilder:
         inclusive = self._metrics(verified)
         exclusive_outcomes = [item for item in verified if not item.corporate_action]
         stage_rows = self._stage_rows(predictions, {item.prediction_id: item for item in verified})
+        prediction_kinds = sorted({item.kind for item in predictions})
+        expected_predictions = self.pool_size * max(1, len(prediction_kinds))
         return {
             "samples": len(verified),
             "coverage": {
                 "pool_size": self.pool_size,
+                "prediction_kinds": prediction_kinds,
+                "expected_predictions": expected_predictions,
                 "predictions": len(predictions),
                 "settled": len(verified),
-                "prediction_rate": len(predictions) / self.pool_size if self.pool_size else None,
+                "prediction_rate": len(predictions) / expected_predictions if expected_predictions else None,
                 "settlement_rate": len(verified) / len(predictions) if predictions else None,
             },
             "metrics": inclusive,
