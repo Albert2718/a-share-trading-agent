@@ -552,7 +552,10 @@ def _without_model_signal(value: Any) -> Any:
 
 def _is_model_signal_key(value: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+    compact = re.sub(r"[^a-z0-9]+", "", value.casefold())
     if "lstm" in normalized:
+        return True
+    if "model_prediction" in normalized or "modelprediction" in compact:
         return True
     return normalized in {
         "model_expected_return",
@@ -574,6 +577,8 @@ def _is_model_signal_text(value: str) -> bool:
             "model expected",
             "model forecast",
             "predicted return",
+            "模型预测",
+            "预测收益率",
         )
     )
 
@@ -601,7 +606,7 @@ def _safe_cio_snapshot(
 
     def safe_text(value: Any) -> bool:
         text = str(value).casefold()
-        return not any(marker in text for marker in forbidden)
+        return not _is_model_signal_text(str(value)) and not any(marker in text for marker in forbidden)
 
     if not safe_text(snapshot.get("reason", "")):
         snapshot["reason"] = ""
@@ -683,9 +688,12 @@ def _safe_label(value: Any) -> str:
 
 def _is_sensitive_key(value: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
-    if normalized in _SENSITIVE_KEYS:
+    compact = re.sub(r"[^a-z0-9]+", "", value.casefold())
+    if normalized in _SENSITIVE_KEYS or compact in _SENSITIVE_KEYS:
         return True
-    return normalized.endswith(("_api_key", "_authorization", "_password", "_secret", "_token"))
+    return normalized.endswith(("_api_key", "_apikey", "_authorization", "_password", "_passwd", "_secret", "_token")) or compact.endswith(
+        ("apikey", "authorization", "password", "passwd", "secret", "token")
+    )
 
 
 def _is_finite_number(value: Any) -> bool:

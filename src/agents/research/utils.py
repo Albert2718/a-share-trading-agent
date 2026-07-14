@@ -128,6 +128,9 @@ def sanitize_secret_text(value: str) -> str:
 
 def _is_sensitive_key(value: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
-    if normalized in _SENSITIVE_KEYS:
+    compact = re.sub(r"[^a-z0-9]+", "", value.casefold())
+    if normalized in _SENSITIVE_KEYS or compact in _SENSITIVE_KEYS:
         return True
-    return normalized.endswith(("_api_key", "_authorization", "_password", "_secret", "_token"))
+    return normalized.endswith(("_api_key", "_apikey", "_authorization", "_password", "_passwd", "_secret", "_token")) or compact.endswith(
+        ("apikey", "authorization", "password", "passwd", "secret", "token")
+    )

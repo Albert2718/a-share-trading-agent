@@ -22,6 +22,7 @@ from src.agents.research.tool import DeepResearchTool
 from src.agents.research.analysts.sentiment import SentimentAnalyst
 from src.agents.research.analysts.news import NewsAnalyst
 from src.agents.research.analysts.quant import QuantAnalyst
+from src.agents.research.utils import redact_recursive
 
 
 class _CompositeOrchestrator:
@@ -488,6 +489,27 @@ class ResearchToolTests(unittest.TestCase):
             "fallback-colon",
             "fallback-userinfo",
             "fallback-query",
+        ):
+            self.assertNotIn(secret, serialized)
+        self.assertIn("[redacted]", serialized)
+
+    def test_shared_research_redactor_catches_nested_key_aliases(self):
+        payload = {
+            "outer": {
+                "openaiApiKey": "camel-secret",
+                "service_apikey": "suffix-secret",
+                "service_passwd": "passwd-alias-secret",
+                "deep": [{"clientSecret": "client-camel-secret"}],
+            }
+        }
+
+        serialized = str(redact_recursive(payload)).lower()
+
+        for secret in (
+            "camel-secret",
+            "suffix-secret",
+            "passwd-alias-secret",
+            "client-camel-secret",
         ):
             self.assertNotIn(secret, serialized)
         self.assertIn("[redacted]", serialized)

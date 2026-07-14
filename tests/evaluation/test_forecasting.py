@@ -341,11 +341,17 @@ class ForecastingTests(unittest.TestCase):
         })
         orchestrator.decision.fundamental.update({
             "risk_flags": ["derived from LSTM model output"],
-            "nested": [{"prediction_source": "model_prediction"}],
+            "nested": [
+                {"prediction_source": "model_prediction"},
+                {"aux_model_prediction_details": {"return": "模型预测收益率 90%"}},
+            ],
         })
         orchestrator.decision.news.update({
             "error": "news report mentions lstm-derived score",
+            "risk_flags": ["模型预测显示上涨"],
         })
+        orchestrator.decision.risk_flags.append("模型预测收益率 90%")
+        orchestrator.decision.top_reasons.append("aux_model_prediction_details indicates upside")
 
         record = forecaster.forecast(
             ENTRY, AS_OF, TARGET, "next_day", generated_at=GENERATED_AT
@@ -354,7 +360,15 @@ class ForecastingTests(unittest.TestCase):
         quant_payload = llm.payload["reports"]["quant"]
         self.assertNotIn("model_expected_return", quant_payload)
         serialized_payload = json.dumps(llm.payload["reports"], ensure_ascii=False).lower()
-        for forbidden in ("lstm", "model_prediction", "model expected", "predicted return"):
+        for forbidden in (
+            "lstm",
+            "model_prediction",
+            "aux_model_prediction_details",
+            "model expected",
+            "predicted return",
+            "模型预测",
+            "预测收益率",
+        ):
             self.assertNotIn(forbidden, serialized_payload)
         quant_evidence = next(
             item for item in record.evidence if item.source == "research:quant"
@@ -364,7 +378,9 @@ class ForecastingTests(unittest.TestCase):
         cio_evidence = next(
             item for item in record.evidence if item.evidence_type == "cio_decision"
         )
-        self.assertNotIn("lstm", str(cio_evidence.metadata).lower())
+        serialized_cio = json.dumps(cio_evidence.to_dict(), ensure_ascii=False).lower()
+        for forbidden in ("lstm", "model_prediction", "aux_model_prediction_details", "模型预测", "预测收益率"):
+            self.assertNotIn(forbidden, serialized_cio)
 
     def test_lstm_unavailable_adds_warning_and_preserves_research_forecast(self):
         forecaster, _, _ = make_forecaster(lstm_return=None)
@@ -509,8 +525,12 @@ class ForecastingTests(unittest.TestCase):
         orchestrator.decision.fundamental.update({
             "api_key": "top-secret",
             "OPENAI_API_KEY": "openai-secret",
+            "openaiApiKey": "camel-openai-secret",
+            "service_apikey": "service-api-secret",
+            "service_passwd": "service-passwd-secret",
             "nested": {
                 "client_secret": "client-secret",
+                "clientSecret": "client-camel-secret",
                 "Authorization": "Bearer nested-secret",
             },
             "error": (
@@ -534,7 +554,11 @@ class ForecastingTests(unittest.TestCase):
         for secret in (
             "top-secret",
             "openai-secret",
+            "camel-openai-secret",
+            "service-api-secret",
+            "service-passwd-secret",
             "client-secret",
+            "client-camel-secret",
             "nested-secret",
             "bearer-secret",
             "query-secret",
