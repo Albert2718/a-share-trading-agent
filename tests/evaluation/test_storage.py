@@ -6,7 +6,9 @@ from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from src.evaluation import storage as storage_module
 from src.evaluation.models import EvidenceItem, ModelForecast, OutcomeRecord, PredictionRecord
 from src.evaluation.storage import EvaluationStorage
 
@@ -67,6 +69,65 @@ def sample_outcome(prediction_id: str) -> OutcomeRecord:
 
 
 class StorageTests(unittest.TestCase):
+    def test_new_record_fsync_precedes_parent_directory_sync(self):
+        events: list[object] = []
+        with TemporaryDirectory() as root:
+            path = Path(root) / "predictions" / "2026-07-14" / "600519-next_day.json"
+            with (
+                patch.object(
+                    storage_module.os,
+                    "fsync",
+                    side_effect=lambda _fd: events.append("file_fsync"),
+                ),
+                patch.object(
+                    storage_module,
+                    "_sync_directory",
+                    side_effect=lambda directory: events.append(
+                        ("directory_sync", directory)
+                    ),
+                    create=True,
+                ),
+            ):
+                storage_module._write_new_json(path, {"prediction_id": "p1"})
+
+        self.assertEqual(events, ["file_fsync", ("directory_sync", path.parent)])
+
+    def test_manifest_replace_precedes_parent_directory_sync(self):
+        events: list[object] = []
+        real_replace = storage_module.os.replace
+        with TemporaryDirectory() as root:
+            path = Path(root) / "predictions" / "manifest.json"
+
+            def replace(source: Path, destination: Path) -> None:
+                events.append(("replace", destination))
+                real_replace(source, destination)
+
+            with (
+                patch.object(
+                    storage_module.os,
+                    "fsync",
+                    side_effect=lambda _fd: events.append("file_fsync"),
+                ),
+                patch.object(storage_module.os, "replace", side_effect=replace),
+                patch.object(
+                    storage_module,
+                    "_sync_directory",
+                    side_effect=lambda directory: events.append(
+                        ("directory_sync", directory)
+                    ),
+                    create=True,
+                ),
+            ):
+                storage_module._write_json_atomic(
+                    path, {"count": 1, "final_hash": "abc"}
+                )
+
+        self.assertEqual(events, [
+            "file_fsync",
+            ("replace", path),
+            ("directory_sync", path.parent),
+        ])
+
     def test_prediction_cannot_be_overwritten(self):
         with TemporaryDirectory() as root:
             storage = EvaluationStorage(Path(root))

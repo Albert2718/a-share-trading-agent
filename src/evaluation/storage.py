@@ -39,10 +39,83 @@ def _write_json(handle: Any, payload: dict[str, Any]) -> None:
     os.fsync(handle.fileno())
 
 
+def _sync_directory(directory: Path) -> None:
+    if os.name != "nt":
+        descriptor = os.open(directory, os.O_RDONLY)
+        sync_error: OSError | None = None
+        try:
+            os.fsync(descriptor)
+        except OSError as exc:
+            sync_error = exc
+        try:
+            os.close(descriptor)
+        except OSError:
+            if sync_error is None:
+                raise
+        if sync_error is not None:
+            raise sync_error
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    generic_read = 0x80000000
+    generic_write = 0x40000000
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    file_share_delete = 0x00000004
+    open_existing = 3
+    file_flag_backup_semantics = 0x02000000
+    invalid_handle_value = ctypes.c_void_p(-1).value
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    flush_file_buffers = kernel32.FlushFileBuffers
+    flush_file_buffers.argtypes = [wintypes.HANDLE]
+    flush_file_buffers.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    handle = create_file(
+        str(directory),
+        generic_read | generic_write,
+        file_share_read | file_share_write | file_share_delete,
+        None,
+        open_existing,
+        file_flag_backup_semantics,
+        None,
+    )
+    if handle == invalid_handle_value:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    sync_error = None
+    if not flush_file_buffers(handle):
+        sync_error = ctypes.WinError(ctypes.get_last_error())
+    close_error = None
+    if not close_handle(handle):
+        close_error = ctypes.WinError(ctypes.get_last_error())
+    if sync_error is not None:
+        raise sync_error
+    if close_error is not None:
+        raise close_error
+
+
 def _write_new_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8", newline="\n") as handle:
         _write_json(handle, payload)
+    _sync_directory(path.parent)
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
@@ -52,6 +125,7 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         with temporary.open("x", encoding="utf-8", newline="\n") as handle:
             _write_json(handle, payload)
         os.replace(temporary, path)
+        _sync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
