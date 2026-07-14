@@ -1,5 +1,7 @@
 from .calendar import next_trade_date
+from .market import EvaluationMarketData
 from .metrics import settle_direction, summarize_metrics
+from .stock_pool import StockPoolManager
 from .storage import EvaluationStorage
 from .models import (
     BatchSummary,
@@ -15,6 +17,7 @@ from .models import (
 __all__ = [
     "BatchSummary",
     "EvidenceItem",
+    "EvaluationMarketData",
     "EvaluationStorage",
     "MetricSummary",
     "ModelError",
@@ -22,6 +25,7 @@ __all__ = [
     "OutcomeRecord",
     "PredictionRecord",
     "StockPoolEntry",
+    "StockPoolManager",
     "next_trade_date",
     "settle_direction",
     "summarize_metrics",

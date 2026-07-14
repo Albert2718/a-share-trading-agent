@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 import numpy as np
@@ -83,6 +83,33 @@ class _EastmoneyAkshare:
 
     def stock_zh_a_spot(self):
         raise AssertionError("sina should only be used as a fallback")
+
+
+class _HistoryAkshare:
+    def __init__(self):
+        self.calls = []
+
+    def stock_zh_a_hist(self, **kwargs):
+        self.calls.append(kwargs)
+        return pd.DataFrame(
+            [
+                {
+                    "日期": "2026-07-14",
+                    "开盘": 10.0,
+                    "最高": 11.0,
+                    "最低": 9.5,
+                    "收盘": 10.5,
+                    "成交量": 1000.0,
+                    "成交额": 10500.0,
+                }
+            ]
+        )
+
+    def stock_zh_a_hist_tx(self, **kwargs):
+        raise AssertionError("eastmoney should satisfy the history request")
+
+    def stock_zh_a_daily(self, **kwargs):
+        raise AssertionError("eastmoney should satisfy the history request")
 
 
 class _RealtimeMarketData:
@@ -187,6 +214,26 @@ class SharedToolTests(unittest.TestCase):
         quote = tool.realtime_quote("600519")
 
         self.assertEqual(quote, {})
+
+    def test_history_passes_raw_adjustment_and_explicit_end_date_to_akshare(self):
+        akshare = _HistoryAkshare()
+        tool = AkshareMarketData(data_access=_DataAccess())
+        tool._ak = akshare
+
+        history = tool.history("600519", adjust="", end_date=date(2026, 7, 14))
+
+        self.assertEqual(akshare.calls[0]["adjust"], "")
+        self.assertEqual(akshare.calls[0]["end_date"], "20260714")
+        self.assertEqual(history.loc[0, "amount"], 10500.0)
+
+    def test_history_defaults_to_qfq_adjustment(self):
+        akshare = _HistoryAkshare()
+        tool = AkshareMarketData(data_access=_DataAccess(), now_fn=lambda: datetime(2026, 7, 14))
+        tool._ak = akshare
+
+        tool.history("600519")
+
+        self.assertEqual(akshare.calls[0]["adjust"], "qfq")
 
     def test_get_realtime_price_returns_live_quote_without_history_lookup(self):
         with patch("src.tools.market.AkshareMarketData", return_value=_RealtimeMarketData()):

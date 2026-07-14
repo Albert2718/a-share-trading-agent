@@ -1,0 +1,224 @@
+from __future__ import annotations
+
+import json
+from collections import Counter
+from dataclasses import asdict
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Protocol
+
+import pandas as pd
+
+from .models import StockPoolEntry
+
+
+RULE_VERSION = "1.0"
+POOL_SIZE = 20
+MIN_VALID_ROWS = 250
+RAW_HISTORY_DAYS = 760
+LIQUIDITY_DAYS = 60
+
+
+class PoolMarketData(Protocol):
+    def csi300_constituents(self) -> list[dict[str, Any]]: ...
+
+    def industry_map(self) -> dict[str, str]: ...
+
+    def raw_history(self, code: str, days: int, end_date: date) -> pd.DataFrame: ...
+
+
+class StockPoolManager:
+    def __init__(self, provider: PoolMarketData) -> None:
+        self.provider = provider
+        self._liquidity_sources: dict[str, str] = {}
+        self._source_date: date | None = None
+
+    def select(self, selected_at: datetime) -> list[StockPoolEntry]:
+        constituents = self.provider.csi300_constituents()
+        industries = self.provider.industry_map()
+        if not constituents:
+            raise RuntimeError("CSI 300 constituent list is empty")
+
+        end_date = selected_at.date()
+        candidates = []
+        source_dates = [
+            source_date
+            for row in constituents
+            if (source_date := self._parse_date(row.get("source_date"))) is not None
+        ]
+        self._source_date = max(source_dates, default=end_date)
+        for row in constituents:
+            code = str(row.get("code", "")).zfill(6)
+            name = str(row.get("name", "")).strip()
+            industry = str(industries.get(code, "")).strip()
+            if not code.isascii() or not code.isdigit() or len(code) != 6:
+                continue
+            if self._excluded_name(name) or not industry:
+                continue
+            history = self.provider.raw_history(code, RAW_HISTORY_DAYS, end_date)
+            candidate = self._candidate_from_history(code, name, industry, history, selected_at)
+            if candidate is not None:
+                candidates.append(candidate)
+
+        ordered = sorted(candidates, key=lambda entry: (-entry.liquidity, entry.code))
+        winners = self._industry_winners(ordered)
+        selected = winners[:POOL_SIZE]
+        counts = Counter(entry.industry for entry in selected)
+        if len(selected) < POOL_SIZE:
+            selected_codes = {entry.code for entry in selected}
+            for entry in ordered:
+                if entry.code in selected_codes or counts[entry.industry] >= 2:
+                    continue
+                selected.append(entry)
+                selected_codes.add(entry.code)
+                counts[entry.industry] += 1
+                if len(selected) == POOL_SIZE:
+                    break
+        return sorted(selected, key=lambda entry: (-entry.liquidity, entry.code))
+
+    def freeze(self, path: Path, selected_at: datetime) -> list[StockPoolEntry]:
+        path = Path(path)
+        if path.exists():
+            return self.load(path)
+        entries = self.select(selected_at)
+        payload = {
+            "rule_version": RULE_VERSION,
+            "constituent_source_date": self._source_date.isoformat() if self._source_date else selected_at.date().isoformat(),
+            "selected_at": selected_at.isoformat(),
+            "criteria": {
+                "target_size": POOL_SIZE,
+                "minimum_valid_rows": MIN_VALID_ROWS,
+                "minimum_listing_years": 2,
+                "liquidity_days": LIQUIDITY_DAYS,
+                "maximum_per_industry_after_fill": 2,
+            },
+            "entries": [
+                {
+                    **self._entry_payload(entry),
+                    "liquidity_source": self._liquidity_sources.get(entry.code, "amount"),
+                }
+                for entry in entries
+            ],
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("x", encoding="utf-8", newline="\n") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2, allow_nan=False)
+                handle.write("\n")
+        except FileExistsError:
+            return self.load(path)
+        return entries
+
+    def load(self, path: Path) -> list[StockPoolEntry]:
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            if payload.get("rule_version") != RULE_VERSION:
+                raise ValueError("unsupported stock pool rule version")
+            selected_at = datetime.fromisoformat(payload["selected_at"])
+            source_date = date.fromisoformat(payload["constituent_source_date"])
+            entries = [
+                StockPoolEntry(
+                    code=str(row["code"]),
+                    name=str(row["name"]),
+                    industry=str(row["industry"]),
+                    liquidity=float(row["liquidity"]),
+                    source_date=date.fromisoformat(row.get("source_date") or source_date.isoformat()),
+                    selected_at=datetime.fromisoformat(row.get("selected_at") or selected_at.isoformat()),
+                    selection_reason=str(row.get("selection_reason", "")),
+                    rule_version=str(row.get("rule_version") or RULE_VERSION),
+                )
+                for row in payload["entries"]
+            ]
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid frozen stock pool: {path}") from exc
+        return entries
+
+    def _candidate_from_history(
+        self,
+        code: str,
+        name: str,
+        industry: str,
+        history: pd.DataFrame,
+        selected_at: datetime,
+    ) -> StockPoolEntry | None:
+        if not isinstance(history, pd.DataFrame) or history.empty:
+            return None
+        required = {"date", "close", "volume"}
+        if not required.issubset(history.columns):
+            return None
+        frame = history.copy()
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        for column in ("close", "volume"):
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        valid = frame.dropna(subset=["date", "close", "volume"])
+        if len(valid) < MIN_VALID_ROWS or valid.empty:
+            return None
+        listing_cutoff = self._two_years_before(selected_at.date())
+        if valid["date"].min().date() > listing_cutoff:
+            return None
+        recent = valid.tail(LIQUIDITY_DAYS)
+        if recent.empty or recent["close"].iloc[-1] <= 0 or recent["volume"].sum() <= 0:
+            return None
+        amount = pd.to_numeric(recent.get("amount"), errors="coerce") if "amount" in recent else None
+        if amount is not None and amount.notna().any() and amount.fillna(0).sum() > 0:
+            liquidity = float(amount.fillna(0).mean())
+            source = "amount"
+        else:
+            liquidity = float((recent["close"] * recent["volume"]).mean())
+            source = "close_x_volume"
+        if liquidity <= 0:
+            return None
+        self._liquidity_sources[code] = source
+        return StockPoolEntry(
+            code=code,
+            name=name,
+            industry=industry,
+            liquidity=liquidity,
+            source_date=self._source_date,
+            selected_at=selected_at,
+            selection_reason="industry_liquidity_winner",
+            rule_version=RULE_VERSION,
+        )
+
+    @staticmethod
+    def _industry_winners(entries: list[StockPoolEntry]) -> list[StockPoolEntry]:
+        winners: list[StockPoolEntry] = []
+        seen: set[str] = set()
+        for entry in entries:
+            if entry.industry in seen:
+                continue
+            seen.add(entry.industry)
+            winners.append(entry)
+        return winners
+
+    @staticmethod
+    def _excluded_name(name: str) -> bool:
+        normalized = name.upper().lstrip("*")
+        return normalized.startswith("ST") or "退市" in name
+
+    @staticmethod
+    def _parse_date(value: Any) -> date | None:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        if value:
+            try:
+                return date.fromisoformat(str(value))
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _two_years_before(value: date) -> date:
+        try:
+            return value.replace(year=value.year - 2)
+        except ValueError:
+            return value.replace(year=value.year - 2, day=28)
+
+    @staticmethod
+    def _entry_payload(entry: StockPoolEntry) -> dict[str, Any]:
+        payload = asdict(entry)
+        payload["source_date"] = entry.source_date.isoformat() if entry.source_date else None
+        payload["selected_at"] = entry.selected_at.isoformat() if entry.selected_at else None
+        return payload
