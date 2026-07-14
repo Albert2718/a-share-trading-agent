@@ -54,7 +54,7 @@ class FakeMarket:
         return pd.DataFrame(
             [
                 {"date": "2026-07-14", "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0},
-                {"date": "2026-07-15", "open": 101.0, "high": 103.0, "low": 100.0, "close": self.actual_close,
+                {"date": "2026-07-15", "open": 101.0, "high": max(103.0, self.actual_close), "low": 100.0, "close": self.actual_close,
                  "adjustment_factor": 2.0 if self.corporate_action else 1.0},
             ]
         )
@@ -68,6 +68,11 @@ class QfqGapMarket(FakeMarket):
                 {"date": "2026-07-15", "close": 100.0},
             ]
         )
+
+
+class FailingQfqMarket(FakeMarket):
+    def qfq_history(self, code: str, days: int, end_date: date) -> pd.DataFrame:
+        raise RuntimeError("qfq unavailable")
 
 
 def make_service(actual_close: float | None = 102.0, *, corporate_action: bool = False):
@@ -143,6 +148,33 @@ class SettlementReportingTests(unittest.TestCase):
         self.assertEqual(service.settle_due(date(2026, 7, 15)), [])
         self.assertEqual(service.pending_reasons, {"p1": "invalid_target_ohlc"})
         self.assertEqual(storage.load_outcomes(), [])
+
+    def test_zero_negative_or_inconsistent_ohlc_stays_pending(self):
+        for column, value in (("close", 0.0), ("low", -1.0), ("high", 99.0)):
+            service, storage, root = make_service(actual_close=102.0)
+            self.addCleanup(root.cleanup)
+            original = service.market_data.raw_history
+
+            def raw_history(code: str, days: int, end_date: date, *, column=column, value=value) -> pd.DataFrame:
+                history = original(code, days, end_date)
+                history.loc[history["date"] == "2026-07-15", column] = value
+                return history
+
+            service.market_data.raw_history = raw_history
+            self.assertEqual(service.settle_due(date(2026, 7, 15)), [])
+            self.assertEqual(service.pending_reasons, {"p1": "invalid_target_ohlc"})
+            self.assertEqual(storage.load_outcomes(), [])
+
+    def test_qfq_provider_failure_degrades_to_warning(self):
+        service, storage, root = make_service(actual_close=102.0)
+        self.addCleanup(root.cleanup)
+        service.market_data = FailingQfqMarket(actual_close=102.0)
+
+        outcome = service.settle_due(date(2026, 7, 15))[0]
+
+        self.assertFalse(outcome.corporate_action)
+        metadata = json.loads((Path(root.name) / "settlement_pending.json").read_text(encoding="utf-8"))
+        self.assertIn("corporate_action_qfq_unavailable", metadata["warnings"]["p1"])
 
     def test_pending_reason_is_persisted_for_later_report_builds(self):
         service, storage, root = make_service(actual_close=None)

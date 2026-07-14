@@ -74,10 +74,21 @@ class SettlementService:
         actual_high = self._number(target, "high")
         actual_low = self._number(target, "low")
         actual_close = self._number(target, "close")
-        if previous_close is None or actual_close is None or previous_close == 0:
+        if previous_close is None or previous_close <= 0:
             self.pending_reasons[prediction.prediction_id] = "invalid_target_bar"
             return None
-        if None in (actual_open, actual_high, actual_low):
+        if (
+            None in (actual_open, actual_high, actual_low, actual_close)
+            or actual_open <= 0
+            or actual_high <= 0
+            or actual_low <= 0
+            or actual_close <= 0
+            or actual_low > actual_high
+            or actual_open < actual_low
+            or actual_open > actual_high
+            or actual_close < actual_low
+            or actual_close > actual_high
+        ):
             self.pending_reasons[prediction.prediction_id] = "invalid_target_ohlc"
             return None
         actual_direction = settle_direction(previous_close, actual_close)
@@ -147,7 +158,10 @@ class SettlementService:
         qfq_history = getattr(self.market_data, "qfq_history", None)
         if not callable(qfq_history):
             return False, "corporate_action_qfq_unavailable"
-        qfq = qfq_history(prediction.code, days=10, end_date=prediction.target_trade_date)
+        try:
+            qfq = qfq_history(prediction.code, days=10, end_date=prediction.target_trade_date)
+        except Exception:
+            return False, "corporate_action_qfq_unavailable"
         qfq_target, qfq_previous = self._target_and_previous_bar(
             qfq, prediction.target_trade_date
         )
