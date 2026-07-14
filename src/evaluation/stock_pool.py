@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter
 from dataclasses import asdict
 from datetime import date, datetime
@@ -74,7 +75,9 @@ class StockPoolManager:
                 counts[entry.industry] += 1
                 if len(selected) == POOL_SIZE:
                     break
-        return sorted(selected, key=lambda entry: (-entry.liquidity, entry.code))
+        result = sorted(selected, key=lambda entry: (-entry.liquidity, entry.code))
+        self._require_complete_pool(result)
+        return result
 
     def freeze(self, path: Path, selected_at: datetime) -> list[StockPoolEntry]:
         path = Path(path)
@@ -116,6 +119,10 @@ class StockPoolManager:
                 raise ValueError("unsupported stock pool rule version")
             selected_at = datetime.fromisoformat(payload["selected_at"])
             source_date = date.fromisoformat(payload["constituent_source_date"])
+            rows = payload["entries"]
+            if not isinstance(rows, list):
+                raise ValueError("stock pool entries must be a list")
+            self._require_complete_pool_rows(rows)
             entries = [
                 StockPoolEntry(
                     code=str(row["code"]),
@@ -127,7 +134,7 @@ class StockPoolManager:
                     selection_reason=str(row.get("selection_reason", "")),
                     rule_version=str(row.get("rule_version") or RULE_VERSION),
                 )
-                for row in payload["entries"]
+                for row in rows
             ]
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError(f"invalid frozen stock pool: {path}") from exc
@@ -159,14 +166,16 @@ class StockPoolManager:
         recent = valid.tail(LIQUIDITY_DAYS)
         if recent.empty or recent["close"].iloc[-1] <= 0 or recent["volume"].sum() <= 0:
             return None
-        amount = pd.to_numeric(recent.get("amount"), errors="coerce") if "amount" in recent else None
-        if amount is not None and amount.notna().any() and amount.fillna(0).sum() > 0:
-            liquidity = float(amount.fillna(0).mean())
+        if "amount" in recent:
+            amount = pd.to_numeric(recent["amount"], errors="coerce")
+            if amount.isna().any():
+                return None
+            liquidity = float(amount.mean())
             source = "amount"
         else:
             liquidity = float((recent["close"] * recent["volume"]).mean())
             source = "close_x_volume"
-        if liquidity <= 0:
+        if not math.isfinite(liquidity) or liquidity <= 0:
             return None
         self._liquidity_sources[code] = source
         return StockPoolEntry(
@@ -222,3 +231,20 @@ class StockPoolManager:
         payload["source_date"] = entry.source_date.isoformat() if entry.source_date else None
         payload["selected_at"] = entry.selected_at.isoformat() if entry.selected_at else None
         return payload
+
+    @staticmethod
+    def _require_complete_pool(entries: list[StockPoolEntry]) -> None:
+        codes = [entry.code for entry in entries]
+        if len(entries) != POOL_SIZE or len(set(codes)) != POOL_SIZE:
+            raise RuntimeError("stock pool must contain exactly 20 unique stocks")
+
+    @staticmethod
+    def _require_complete_pool_rows(rows: list[Any]) -> None:
+        if len(rows) != POOL_SIZE or not all(isinstance(row, dict) for row in rows):
+            raise ValueError("stock pool must contain exactly 20 unique stocks")
+        codes = [str(row.get("code", "")) for row in rows]
+        if (
+            len(set(codes)) != POOL_SIZE
+            or any(len(code) != 6 or not code.isascii() or not code.isdigit() for code in codes)
+        ):
+            raise ValueError("stock pool must contain exactly 20 unique stocks")

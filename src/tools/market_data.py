@@ -280,7 +280,8 @@ class AkshareMarketData:
 
     def _normalize_history(self, df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:
-            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
+            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+        has_amount = "成交额" in df.columns or "amount" in df.columns
         col_map = {
             "日期": "date",
             "date": "date",
@@ -298,11 +299,14 @@ class AkshareMarketData:
             "amount": "amount",
         }
         result = df.rename(columns={key: value for key, value in col_map.items() if key in df.columns})
-        for col in ["date", "open", "high", "low", "close", "volume", "amount"]:
+        columns = ["date", "open", "high", "low", "close", "volume"]
+        if has_amount:
+            columns.append("amount")
+        for col in columns:
             if col not in result.columns:
-                result[col] = 0.0 if col in {"volume", "amount"} else None
-        result = result[["date", "open", "high", "low", "close", "volume", "amount"]].copy()
-        for col in ["open", "high", "low", "close", "volume", "amount"]:
+                result[col] = 0.0 if col == "volume" else None
+        result = result[columns].copy()
+        for col in [column for column in columns if column != "date"]:
             result[col] = pd.to_numeric(result[col], errors="coerce")
         return result.dropna(subset=["close"]).reset_index(drop=True)
 

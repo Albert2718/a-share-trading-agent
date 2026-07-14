@@ -82,7 +82,7 @@ class EvaluationMarketData:
         return [{**record, "source_date": source_date} for record in records]
 
     def industry_map(self) -> dict[str, str]:
-        cache_key = self._now_fn().date().isoformat()
+        cache_key = "all"
 
         def loader() -> dict[str, str]:
             ak = self._require_akshare()

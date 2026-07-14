@@ -112,6 +112,11 @@ class _HistoryAkshare:
         raise AssertionError("eastmoney should satisfy the history request")
 
 
+class _HistoryWithoutAmountAkshare(_HistoryAkshare):
+    def stock_zh_a_hist(self, **kwargs):
+        return super().stock_zh_a_hist(**kwargs).drop(columns=["成交额"])
+
+
 class _RealtimeMarketData:
     def candidates_from_codes(self, codes):
         return [{"code": codes[0], "name": "贵州茅台"}]
@@ -234,6 +239,14 @@ class SharedToolTests(unittest.TestCase):
         tool.history("600519")
 
         self.assertEqual(akshare.calls[0]["adjust"], "qfq")
+
+    def test_history_preserves_absent_amount_column(self):
+        tool = AkshareMarketData(data_access=_DataAccess())
+        tool._ak = _HistoryWithoutAmountAkshare()
+
+        history = tool.history("600519", adjust="", end_date=date(2026, 7, 14))
+
+        self.assertNotIn("amount", history.columns)
 
     def test_get_realtime_price_returns_live_quote_without_history_lookup(self):
         with patch("src.tools.market.AkshareMarketData", return_value=_RealtimeMarketData()):
