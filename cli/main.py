@@ -41,6 +41,12 @@ def main() -> None:
         run_config(args)
     elif args.command == "chat":
         run_chat(args)
+    elif args.command == "evaluate":
+        from .evaluation import run_evaluate
+
+        status = run_evaluate(args)
+        if status:
+            raise SystemExit(status)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
     chat = sub.add_parser("chat", help="Start the natural-language LangGraph chat agent.")
     chat.add_argument("--session-id", default="cli")
     chat.add_argument("--show-tools", action="store_true", help="Print tool calls and raw tool results after each answer.")
+
+    evaluate = sub.add_parser("evaluate", help="Run or report the fixed-pool realistic evaluation.")
+    evaluate.add_argument("action", choices=["daily", "report"])
+    evaluate.add_argument("--root", default="evaluation")
     return parser
 
 
