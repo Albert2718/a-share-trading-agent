@@ -29,8 +29,8 @@ Get-Content -Raw -Encoding UTF8 -Path <path>
 
 ## 项目编码风险点
 
-- `src/tools/deep_research/prompts.py` 和 `src/graph/prompts.py` 包含中文 Prompt，必须保持 UTF-8。
-- `docs/*.md` 包含中文架构文档，必须保持 UTF-8。
+- `src/agents/research/prompts.py` 和 `src/agents/chat/prompts.py` 包含中文 Prompt，必须保持 UTF-8。
+- `AGENT_ARCHITECTURE.md` 和 `README.md` 包含中文架构说明，必须保持 UTF-8。
 - `outputs/reports/*.md` 和 `outputs/reports/*.json` 是中文报告输出，必须以 UTF-8 生成。
 - `.env` 可能包含 API Key，不得打印完整内容，不得提交到仓库。
 
@@ -46,5 +46,5 @@ Get-Content -Raw -Encoding UTF8 -Path <changed-file>
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE = "1"
-python -c "import src.chat_agent; import src.tools.deep_research"
+python -c "import src.agents.chat; import src.agents.research"
 ```

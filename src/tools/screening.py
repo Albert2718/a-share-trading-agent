@@ -7,8 +7,8 @@ import pandas as pd
 
 from src.core import DataAccessLayer
 from src.tools.financial import get_stock_basic, get_valuation
-from src.tools.deep_research.tools import AkshareTools
-from src.tools.deep_research.utils import normalize_a_share_code, safe_float
+from src.tools.market_data import AkshareMarketData
+from src.tools.utils import normalize_a_share_code, safe_float
 
 
 def _records(df: pd.DataFrame | None) -> List[Dict[str, Any]]:
@@ -128,7 +128,7 @@ def _screen_by_name_detail(
     if not keyword:
         return {"ok": False, "source": "fallback_stock_detail", "error": "fallback requires industry_keyword", "items": []}
     try:
-        names = AkshareTools().stock_names()
+        names = AkshareMarketData().stock_names()
     except Exception as exc:
         return {"ok": False, "source": "fallback_stock_detail", "error": str(exc), "items": []}
 
@@ -202,7 +202,7 @@ def run_backtest(code: str, strategy: str = "macd", days: int = 250) -> Dict[str
     strategy = (strategy or "macd").lower()
     days = max(30, min(int(days or 250), 800))
     try:
-        history = AkshareTools().history(norm, days=days)
+        history = AkshareMarketData().history(norm, days=days)
     except Exception as exc:
         return {"ok": False, "code": norm, "strategy": strategy, "error": str(exc), "source": "akshare_history_calculated"}
     if history.empty or len(history) < 30:

@@ -6,8 +6,8 @@ from typing import Any, Dict, List
 import pandas as pd
 
 from src.core import DataAccessLayer
-from src.tools.deep_research.tools import AkshareTools
-from src.tools.deep_research.utils import normalize_a_share_code, safe_float
+from src.tools.market_data import AkshareMarketData
+from src.tools.utils import normalize_a_share_code, safe_float
 
 
 def _row_to_dict(row) -> Dict[str, Any]:
@@ -19,7 +19,7 @@ def _row_to_dict(row) -> Dict[str, Any]:
 
 def get_realtime_price(code: str) -> Dict[str, Any]:
     """Return the latest available A-share price from cached daily data."""
-    tools = AkshareTools()
+    tools = AkshareMarketData()
     norm = normalize_a_share_code(code)
     candidate = tools.candidates_from_codes([norm])[0]
     history = tools.history(norm, days=8)
@@ -48,7 +48,7 @@ def get_realtime_price(code: str) -> Dict[str, Any]:
 
 def get_daily_price(code: str, days: int = 7) -> Dict[str, Any]:
     """Return recent daily OHLCV records."""
-    tools = AkshareTools()
+    tools = AkshareMarketData()
     norm = normalize_a_share_code(code)
     days = max(1, min(int(days or 7), 120))
     history = tools.history(norm, days=days)

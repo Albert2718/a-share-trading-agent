@@ -4,14 +4,14 @@ from typing import Dict
 
 import numpy as np
 
-from src.tools.deep_research.tools import AkshareTools
-from src.tools.deep_research.utils import normalize_a_share_code, safe_float
+from src.tools.market_data import AkshareMarketData
+from src.tools.utils import normalize_a_share_code, safe_float
 
 
 def get_technical_indicators(code: str) -> Dict:
     """Calculate common technical indicators from daily close prices."""
     norm = normalize_a_share_code(code)
-    history = AkshareTools().history(norm, days=120)
+    history = AkshareMarketData().history(norm, days=120)
     if len(history) < 35:
         return {"ok": False, "code": norm, "error": "history rows fewer than 35"}
 

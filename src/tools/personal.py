@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 from src.core import UserMemoryStore
 from src.tools.financial import get_stock_basic
 from src.tools.market import get_realtime_price
-from src.tools.deep_research.utils import normalize_a_share_code, safe_float
+from src.tools.utils import normalize_a_share_code, safe_float
 
 
 def _now() -> str:

@@ -110,7 +110,7 @@ core -> Python 标准库和第三方 SDK
 
 ### ToolDefinition 与 ToolRegistry
 
-`ToolDefinition` 保存工具名称、说明、参数 Schema 和执行函数。各工具模块声明自己的定义，`src/agents/chat/tool_catalog.py` 中的 `build_default_registry()` 负责显式汇总轻工具和深度研究工具。`ToolRegistry` 只负责：
+`ToolDefinition` 保存工具名称、说明、参数 Schema 和执行函数。`src/agents/chat/tool_catalog.py` 作为组合根，显式声明并汇总轻工具和深度研究工具；业务工具模块本身不依赖聊天协议。`ToolRegistry` 只负责：
 
 - 输出 OpenAI-compatible 工具 Schema。
 - 校验并执行工具参数。

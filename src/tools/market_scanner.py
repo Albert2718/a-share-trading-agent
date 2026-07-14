@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 import pandas as pd
 
 from src.core import DataAccessLayer
-from src.tools.deep_research.utils import normalize_a_share_code, safe_float
+from src.tools.utils import normalize_a_share_code, safe_float
 
 
 def _records(df: pd.DataFrame | None) -> List[Dict[str, Any]]:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from src.tools.deep_research.reporting import format_console
-from src.tools.deep_research.schemas import FinalReport
+from src.agents.research.reporting import format_console
+from src.agents.research.schemas import FinalReport
 
 
 def print_banner() -> None:

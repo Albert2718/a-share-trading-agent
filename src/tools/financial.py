@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from src.core import DataAccessLayer
-from src.tools.deep_research.tools import AkshareTools
-from src.tools.deep_research.utils import normalize_a_share_code, safe_float
+from src.tools.market_data import AkshareMarketData
+from src.tools.utils import normalize_a_share_code, safe_float
 
 
 def _pick_number(row: Dict[str, Any], names: List[str]):
@@ -18,7 +18,7 @@ def _pick_number(row: Dict[str, Any], names: List[str]):
 
 def get_stock_basic(code_or_name: str) -> Dict[str, Any]:
     """Return stock code and name from the A-share code-name table."""
-    tools = AkshareTools()
+    tools = AkshareMarketData()
     raw = str(code_or_name or "").strip()
     names = tools.stock_names()
     norm = normalize_a_share_code(raw)
@@ -83,7 +83,7 @@ def _first(row: Dict[str, Any], names: List[str]):
 
 def get_valuation(code: str) -> Dict[str, Any]:
     """Return latest valuation metrics."""
-    tools = AkshareTools()
+    tools = AkshareMarketData()
     norm = normalize_a_share_code(code)
     rows = tools.valuation(norm)
     latest = rows[-1] if rows else {}
@@ -101,7 +101,7 @@ def get_valuation(code: str) -> Dict[str, Any]:
 
 def get_financial_indicators(code: str) -> Dict[str, Any]:
     """Return latest financial indicators."""
-    tools = AkshareTools()
+    tools = AkshareMarketData()
     norm = normalize_a_share_code(code)
     rows = tools.financial_indicators(norm)
     latest = rows[-1] if rows else {}

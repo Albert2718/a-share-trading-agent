@@ -10,19 +10,30 @@
 - 本地缓存与限流：AKShare 数据经统一数据访问层读取，减少重复请求。
 - 报告输出：CLI 运行结果保存为 Markdown 和 JSON。
 
+## Agent 架构
+
+项目只有一个顶层聊天 Agent。普通问题由它直接选择行情、财务、技术、筛选和个人记忆工具；需要完整判断时，它会调用 `DeepResearchTool`。这个重工具内部保留五个研究角色：Quant、Fundamental、News、Sentiment 分别生成报告，最后由 CIO 汇总为 `buy`、`watch` 或 `avoid`。
+
+```text
+用户输入 -> Chat Agent -> LLMClient -> Tool Registry
+                                      ├── 轻量业务工具
+                                      └── DeepResearchTool
+                                            └── 四类分析报告 -> CIO 决策
+```
+
+`src/core` 只提供配置、LLM、缓存和数据访问等基础能力，不依赖 Agent 或业务工具。工具调用失败时会返回稳定错误信息；单个研究角色不可用时，其余角色仍会继续运行，CIO 会给出更保守的结果。
+
 ## 目录结构
 
 ```text
 .
 ├── cli/                 # 命令行入口、交互提示和控制台渲染
 ├── src/                 # 项目核心源码
-│   ├── chat_agent.py    # 自然语言聊天 Agent 外壳
+│   ├── agents/          # 聊天 Agent 与五角色深度研究复合工具
 │   ├── core/            # 配置、缓存、限流、LLM 和本地记忆
-│   ├── graph/           # LangGraph 状态、节点、工具注册和工作流
-│   └── tools/           # 行情、财务、技术、筛选、预测和深度研究工具
-├── experiments/         # 课程实验脚本、Notebook 和训练数据
-├── artifacts/models/    # 训练得到的模型、指标和图表
-├── tests/               # 后续测试目录
+│   └── tools/           # 行情、财务、新闻、技术、筛选和预测工具
+├── lstm_training/       # LSTM 训练脚本、训练数据、模型和评估结果
+├── tests/               # Agent、工具、CLI 和降级路径测试
 ├── .env.example         # 环境变量模板
 └── run_agent.py         # CLI 启动脚本
 ```
@@ -65,4 +76,11 @@ python run_agent.py cache clear
 
 # 查看配置状态
 python run_agent.py config status
+```
+
+## 测试
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = "1"
+python -m unittest discover -s tests -v
 ```

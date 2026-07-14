@@ -7,17 +7,17 @@ from pathlib import Path
 from rich.console import Console
 from rich.markdown import Markdown
 
-from src.core import CacheManager, ensure_cli_config, print_config_status
-from src.tools.deep_research.pipeline import TradingAgentOrchestrator
-from src.tools.deep_research.reporting import format_markdown
-from src.tools.deep_research.schemas import AnalysisContext, StockCandidate, to_dict
-from src.tools.deep_research.utils import (
-    normalize_a_share_code,
+from src.agents.research.orchestrator import ResearchOrchestrator
+from src.agents.research.reporting import format_markdown
+from src.agents.research.schemas import AnalysisContext, StockCandidate, to_dict
+from src.agents.research.utils import (
     parse_watchlist,
     report_filename_stem,
     save_json_report,
     save_markdown_report,
 )
+from src.core import CacheManager, ensure_cli_config, print_config_status
+from src.tools.utils import normalize_a_share_code
 
 from .render import print_banner, print_report
 from .wizard import prompt_options
@@ -109,7 +109,7 @@ def run_analyze(args) -> None:
     if not args.no_news or not args.no_llm:
         ensure_cli_config(interactive=True)
 
-    orchestrator = TradingAgentOrchestrator()
+    orchestrator = ResearchOrchestrator()
     candidates = orchestrator.candidates_from_codes([normalize_a_share_code(args.code)])
     report = orchestrator.analyze(
         candidates,
@@ -126,7 +126,7 @@ def run_screen(args) -> None:
     if not args.no_news or not args.no_llm:
         ensure_cli_config(interactive=True)
 
-    orchestrator = TradingAgentOrchestrator()
+    orchestrator = ResearchOrchestrator()
     if args.hot:
         candidates = orchestrator.hot_candidates(args.top)
         mode = "hot"
@@ -165,7 +165,7 @@ def run_config(args) -> None:
 
 def run_chat(args) -> None:
     ensure_cli_config(interactive=True)
-    from src.chat_agent import ChatAgent
+    from src.agents.chat import ChatAgent
 
     print_banner()
     print("Chat mode. Type 'exit', 'quit', or '/exit' to stop.")

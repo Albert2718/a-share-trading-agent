@@ -4,20 +4,21 @@ from typing import Any, Dict
 
 import numpy as np
 
-from src.tools.deep_research.tools import AkshareTools, LocalLSTMTool
-from src.tools.deep_research.utils import normalize_a_share_code, safe_float
+from src.tools.lstm import LSTMPredictor
+from src.tools.market_data import AkshareMarketData
+from src.tools.utils import normalize_a_share_code, safe_float
 
 
 def predict_short_term_price(code: str) -> Dict[str, Any]:
     """Run the local LSTM model on the latest 14 closes and estimate next-step return."""
     norm = normalize_a_share_code(code)
-    history = AkshareTools().history(norm, days=30)
+    history = AkshareMarketData().history(norm, days=30)
     if len(history) < 14:
         return {"ok": False, "code": norm, "error": "history rows fewer than 14"}
 
     close = history["close"].astype(float)
     last_14_close = close.tail(14).to_numpy(dtype=np.float32)
-    model = LocalLSTMTool()
+    model = LSTMPredictor()
     expected_return = model.predict_return(last_14_close)
     if expected_return is None:
         return {
