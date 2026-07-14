@@ -99,10 +99,22 @@ class _CredentialNewsMarketData:
     def stock_news(self, code):
         return [{
             "标题": "凭据边界",
-            "内容": "Authorization: Bearer news-secret",
-            "新闻链接": "https://user:password@news.example/item?api_key=query-secret",
+            "内容": (
+                "Authorization: Bearer news-secret; token=token-secret; "
+                "passwd=passwd-secret; api_key: colon-secret; Bearer bare-secret"
+            ),
+            "新闻链接": "https://user:password@news.example/item?api_key=query-secret&token=url-token",
             "发布时间": "2026-07-14T17:00:00+08:00",
         }]
+
+
+class _RaisingCredentialNewsMarketData:
+    def stock_news(self, code):
+        raise RuntimeError(
+            "Authorization: Bearer source-secret; token=source-token; "
+            "passwd=source-passwd; api_key: source-colon; "
+            "https://user:source-userinfo@news.example/item?token=source-query"
+        )
 
 
 class _RecordingStructuredLLM:
@@ -300,7 +312,40 @@ class ResearchToolTests(unittest.TestCase):
         )
 
         serialized = str(llm.payload).lower()
-        for secret in ("news-secret", "query-secret", "user:password"):
+        for secret in (
+            "news-secret",
+            "token-secret",
+            "passwd-secret",
+            "colon-secret",
+            "bare-secret",
+            "query-secret",
+            "url-token",
+            "user:password",
+        ):
+            self.assertNotIn(secret, serialized)
+        self.assertIn("[redacted]", serialized)
+
+    def test_news_source_errors_redact_sanitizer_bypass_strings(self):
+        analyst = NewsAnalyst(
+            akshare_tools=_RaisingCredentialNewsMarketData(),
+            tavily_api_key="disabled",
+        )
+        analyst.tavily_api_key = None
+
+        report = analyst.analyze(
+            StockCandidate(code="600519", name="贵州茅台"),
+            AnalysisContext(use_llm=False),
+        )
+
+        serialized = str(report.error).lower()
+        for secret in (
+            "source-secret",
+            "source-token",
+            "source-passwd",
+            "source-colon",
+            "source-userinfo",
+            "source-query",
+        ):
             self.assertNotIn(secret, serialized)
         self.assertIn("[redacted]", serialized)
 
@@ -330,6 +375,8 @@ class ResearchToolTests(unittest.TestCase):
             "Authorization: Bearer bearer-secret; "
             "client_secret=client-secret; "
             "openai_api_key=sk-openai-secret; "
+            "token=token-secret; passwd=passwd-secret; api_key: colon-secret; "
+            "Bearer bare-secret; "
             "https://user:userinfo-secret@cio.example/path?token=query-secret&api_key=api-secret"
         )
 
@@ -379,6 +426,10 @@ class ResearchToolTests(unittest.TestCase):
                 "bearer-secret",
                 "client-secret",
                 "sk-openai-secret",
+                "token-secret",
+                "passwd-secret",
+                "colon-secret",
+                "bare-secret",
                 "userinfo-secret",
                 "query-secret",
                 "api-secret",
@@ -387,6 +438,59 @@ class ResearchToolTests(unittest.TestCase):
                 self.assertNotIn(secret, serialized)
             self.assertIn("[redacted]", serialized)
             self.assertIn("cio.example/path", serialized)
+
+    def test_cio_rule_fallback_snapshots_redact_credentials(self):
+        analyst = CIOAgent(openai_api_key="", llm_client=None)
+        secret_text = (
+            "Authorization: Bearer fallback-secret; token=fallback-token; "
+            "passwd=fallback-passwd; api_key: fallback-colon; "
+            "https://user:fallback-userinfo@cio.example/path?token=fallback-query"
+        )
+
+        decision = analyst.decide_one(
+            QuantReport(
+                code="600519",
+                name="贵州茅台",
+                status="error",
+                error=f"quant failed {secret_text}",
+            ),
+            FundamentalReport(
+                code="600519",
+                name="贵州茅台",
+                status="ok",
+                key_factors=[f"factor {secret_text}"],
+            ),
+            NewsReport(
+                code="600519",
+                name="贵州茅台",
+                status="ok",
+                events=[EventCard(summary=f"event {secret_text}")],
+            ),
+            SentimentReport(
+                code="600519",
+                name="贵州茅台",
+                status="error",
+                error=f"sentiment failed {secret_text}",
+            ),
+            use_llm=False,
+        )
+
+        serialized = str({
+            "quant": decision.quant,
+            "fundamental": decision.fundamental,
+            "news": decision.news,
+            "sentiment": decision.sentiment,
+        }).lower()
+        for secret in (
+            "fallback-secret",
+            "fallback-token",
+            "fallback-passwd",
+            "fallback-colon",
+            "fallback-userinfo",
+            "fallback-query",
+        ):
+            self.assertNotIn(secret, serialized)
+        self.assertIn("[redacted]", serialized)
 
     def test_composite_tool_preserves_chat_payload(self):
         result = DeepResearchTool(_CompositeOrchestrator()).run("SH.600519", depth="full")

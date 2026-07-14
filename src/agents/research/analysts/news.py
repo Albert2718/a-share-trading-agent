@@ -7,7 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from ..prompts import NEWS_ANALYST_SYSTEM
 from ..schemas import AnalysisContext, EventCard, NewsReport, StockCandidate
-from ..utils import redact_recursive
+from ..utils import redact_recursive, sanitize_secret_text
 from src.core import DataAccessLayer, LLMClient, load_config
 from src.tools.market_data import AkshareMarketData
 from src.tools.news_search import NewsSearchTool
@@ -335,24 +335,7 @@ class NewsAnalyst:
 
     @staticmethod
     def _sanitize_text(value: str) -> str:
-        text = re.sub(
-            r"authorization\s*:\s*(?:bearer|basic)\s+[^\s;]+",
-            "Authorization: [REDACTED]",
-            value,
-            flags=re.IGNORECASE,
-        )
-        text = re.sub(
-            r"\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|password|secret))\s*=\s*[^\s&;]+",
-            lambda match: f"{match.group(1)}=[REDACTED]",
-            text,
-            flags=re.IGNORECASE,
-        )
-        return re.sub(
-            r"https?://[^\s;]+",
-            lambda match: NewsAnalyst._sanitize_url(match.group(0)),
-            text,
-            flags=re.IGNORECASE,
-        )
+        return sanitize_secret_text(value)
 
     @staticmethod
     def _sanitize_url(value: str) -> str:

@@ -124,14 +124,14 @@ class CIOAgent:
             confidence=confidence,
             rank_score=rank_score,
             position_bias=position_bias,
-            reason="; ".join(reasons[:8]),
-            top_reasons=reasons[:6],
-            risk_flags=risks[:8],
-            invalidation_conditions=invalidations[:4],
-            quant=asdict(quant),
-            fundamental=asdict(fundamental),
-            news=asdict(news),
-            sentiment=asdict(sentiment),
+            reason=redact_recursive("; ".join(reasons[:8])),
+            top_reasons=redact_recursive(reasons[:6]),
+            risk_flags=redact_recursive(risks[:8]),
+            invalidation_conditions=redact_recursive(invalidations[:4]),
+            quant=redact_recursive(asdict(quant)),
+            fundamental=redact_recursive(asdict(fundamental)),
+            news=redact_recursive(asdict(news)),
+            sentiment=redact_recursive(asdict(sentiment)),
         )
 
     def _try_llm_decide(

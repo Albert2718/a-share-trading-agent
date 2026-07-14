@@ -330,7 +330,22 @@ class ForecastingTests(unittest.TestCase):
         self.assertIn("news_timestamp_unverifiable", record.warnings)
 
     def test_residual_lstm_values_are_removed_from_payload_and_persisted_research(self):
-        forecaster, llm, _ = make_forecaster()
+        forecaster, llm, orchestrator = make_forecaster()
+        orchestrator.decision.quant.update({
+            "error": "LSTM predicted return leaked through error",
+            "risk_flags": ["model prediction disagrees with trend"],
+            "nested": {
+                "model_prediction": {"expected_return": 0.99},
+                "notes": ["auxiliary LSTM model forecast should be hidden"],
+            },
+        })
+        orchestrator.decision.fundamental.update({
+            "risk_flags": ["derived from LSTM model output"],
+            "nested": [{"prediction_source": "model_prediction"}],
+        })
+        orchestrator.decision.news.update({
+            "error": "news report mentions lstm-derived score",
+        })
 
         record = forecaster.forecast(
             ENTRY, AS_OF, TARGET, "next_day", generated_at=GENERATED_AT
@@ -338,7 +353,9 @@ class ForecastingTests(unittest.TestCase):
 
         quant_payload = llm.payload["reports"]["quant"]
         self.assertNotIn("model_expected_return", quant_payload)
-        self.assertNotIn("lstm", str(quant_payload).lower())
+        serialized_payload = json.dumps(llm.payload["reports"], ensure_ascii=False).lower()
+        for forbidden in ("lstm", "model_prediction", "model expected", "predicted return"):
+            self.assertNotIn(forbidden, serialized_payload)
         quant_evidence = next(
             item for item in record.evidence if item.source == "research:quant"
         )
@@ -411,6 +428,22 @@ class ForecastingTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(record.agent.expected_return, 0.10)
+
+    def test_next_day_record_omits_stage_narrative_fields(self):
+        forecaster, _, _ = make_forecaster()
+
+        record = forecaster.forecast(
+            ENTRY, AS_OF, TARGET, "next_day", generated_at=GENERATED_AT
+        )
+
+        self.assertIsNone(record.stage_direction)
+        self.assertIsNone(record.stage_target_price)
+        self.assertIsNone(record.stage_interval_low)
+        self.assertIsNone(record.stage_interval_high)
+        self.assertIsNone(record.stage_confidence)
+        self.assertIsNone(record.stage_thesis)
+        self.assertEqual(record.catalysts, ())
+        self.assertEqual(record.risks, ())
 
     def test_missing_or_stale_history_is_rejected_before_forecast(self):
         for market_data in (

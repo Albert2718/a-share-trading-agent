@@ -79,7 +79,11 @@ _AUTH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _CREDENTIAL_PATTERN = re.compile(
-    r"\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret))\s*=\s*[^\s&;]+",
+    r"\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|passwd|password|secret))\s*[:=]\s*[^\s&;]+",
+    re.IGNORECASE,
+)
+_BEARER_PATTERN = re.compile(
+    r"\bbearer\s+[^\s;]+",
     re.IGNORECASE,
 )
 
@@ -104,6 +108,7 @@ def redact_recursive(value):
 def sanitize_secret_text(value: str) -> str:
     text = _AUTH_PATTERN.sub("Authorization: [REDACTED]", value)
     text = _CREDENTIAL_PATTERN.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
+    text = _BEARER_PATTERN.sub("Bearer [REDACTED]", text)
 
     def sanitize_url(match: re.Match[str]) -> str:
         raw_url = match.group(0)

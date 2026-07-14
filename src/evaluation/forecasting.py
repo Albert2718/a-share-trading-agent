@@ -204,8 +204,8 @@ class EvaluationForecaster:
             stage_interval_high=agent_forecast.interval_high if stage else None,
             stage_confidence=agent_forecast.confidence if stage else None,
             stage_thesis=_stage_thesis(draft) if stage else None,
-            catalysts=draft.catalysts,
-            risks=draft.risks,
+            catalysts=draft.catalysts if stage else (),
+            risks=draft.risks if stage else (),
         )
 
     def _load_history(
@@ -290,7 +290,8 @@ def _cutoff_safe_reports(
         "news": _redact_recursive(_json_safe(deepcopy(decision.news))),
         "sentiment": _redact_recursive(_json_safe(deepcopy(decision.sentiment))),
     }
-    _remove_model_signal(reports["quant"])
+    for report in reports.values():
+        _remove_model_signal(report)
     warnings: list[str] = []
     events = reports["news"].get("events", [])
     if not isinstance(events, list):
@@ -324,7 +325,8 @@ def _cutoff_safe_reports(
 
 def _reports_for_llm(reports: Mapping[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     llm_reports = deepcopy(dict(reports))
-    _remove_model_signal(llm_reports["quant"])
+    for report in llm_reports.values():
+        _remove_model_signal(report)
     return _redact_recursive(llm_reports)
 
 
@@ -515,15 +517,65 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
-def _remove_model_signal(quant: dict[str, Any]) -> None:
-    quant.pop("model_expected_return", None)
-    factors = quant.get("key_factors")
-    if isinstance(factors, list):
-        quant["key_factors"] = [
-            factor
-            for factor in factors
-            if not (isinstance(factor, str) and "lstm" in factor.casefold())
-        ]
+_DROP = object()
+
+
+def _remove_model_signal(report: dict[str, Any]) -> None:
+    cleaned = _without_model_signal(report)
+    report.clear()
+    if isinstance(cleaned, dict):
+        report.update(cleaned)
+
+
+def _without_model_signal(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        result = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if _is_model_signal_key(key_text):
+                continue
+            cleaned = _without_model_signal(item)
+            if cleaned is not _DROP:
+                result[key_text] = cleaned
+        return result
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        result = []
+        for item in value:
+            cleaned = _without_model_signal(item)
+            if cleaned is not _DROP:
+                result.append(cleaned)
+        return result
+    if isinstance(value, str) and _is_model_signal_text(value):
+        return _DROP
+    return value
+
+
+def _is_model_signal_key(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+    if "lstm" in normalized:
+        return True
+    return normalized in {
+        "model_expected_return",
+        "model_prediction",
+        "model_predicted_return",
+        "prediction_source",
+    }
+
+
+def _is_model_signal_text(value: str) -> bool:
+    text = value.casefold()
+    return any(
+        marker in text
+        for marker in (
+            "lstm",
+            "model_expected_return",
+            "model prediction",
+            "model_prediction",
+            "model expected",
+            "model forecast",
+            "predicted return",
+        )
+    )
 
 
 def _safe_cio_snapshot(
@@ -577,7 +629,11 @@ _AUTH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _CREDENTIAL_PATTERN = re.compile(
-    r"\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret))\s*=\s*[^\s&;]+",
+    r"\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|passwd|password|secret))\s*[:=]\s*[^\s&;]+",
+    re.IGNORECASE,
+)
+_BEARER_PATTERN = re.compile(
+    r"\bbearer\s+[^\s;]+",
     re.IGNORECASE,
 )
 
@@ -602,6 +658,7 @@ def _redact_recursive(value: Any) -> Any:
 def _sanitize_string(value: str) -> str:
     text = _AUTH_PATTERN.sub("Authorization: [REDACTED]", value)
     text = _CREDENTIAL_PATTERN.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
+    text = _BEARER_PATTERN.sub("Bearer [REDACTED]", text)
 
     def sanitize_url(match: re.Match[str]) -> str:
         raw_url = match.group(0)
