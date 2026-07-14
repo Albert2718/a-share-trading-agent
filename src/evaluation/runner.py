@@ -54,7 +54,7 @@ class EvaluationRunner:
         latest_trade_date = self._require_latest_complete_date(as_of)
         self._require_valid_chains()
 
-        entries = self.pool_manager.freeze(self.root / "pools" / f"{as_of.isoformat()}.json", local_now)
+        entries = self.pool_manager.freeze(self.root / "stock_pool.json", local_now)
         if len(entries) != POOL_SIZE:
             raise RuntimeError(f"frozen stock pool must contain {POOL_SIZE} entries")
         self._require_provider_data_complete(as_of, entries)

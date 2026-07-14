@@ -10,8 +10,11 @@ __pycache__/
 .env
 outputs/
 tmp/
+/tmp*/
 data/cache/
 data/memory/*.json
+evaluation/data/
+evaluation/reports/
 /.localenv/
 /.venv/
 /venv/

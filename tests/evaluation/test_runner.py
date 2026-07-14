@@ -112,6 +112,8 @@ class RunnerTests(unittest.TestCase):
         summary = runner.run_daily(FIXED_AFTER_CLOSE)
 
         self.assertEqual(calls[0], "settle")
+        runner.pool_manager.freeze.assert_called_once()
+        self.assertEqual(runner.pool_manager.freeze.call_args.args[0], runner.root / "stock_pool.json")
         self.assertNotIn("append:next_day:600519", calls)
         self.assertEqual(summary.pool_size, 20)
         self.assertEqual(summary.successful_predictions, 20)

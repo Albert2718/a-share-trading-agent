@@ -7,6 +7,7 @@
 - 自然语言聊天入口：识别用户意图并调用行情、财务、技术、筛选和个人记忆工具。
 - 单股深度分析：由量化、基本面、新闻、情绪和 CIO Agent 生成 `buy`、`watch` 或 `avoid` 建议。
 - 批量筛选：支持 watchlist 或热门股票池分析。
+- 现实性评测：固定 20 只沪深 300 股票，收盘后记录次日涨跌方向和收盘价预测。
 - 本地缓存与限流：AKShare 数据经统一数据访问层读取，减少重复请求。
 - 报告输出：CLI 运行结果保存为 Markdown 和 JSON。
 
@@ -28,9 +29,11 @@
 ```text
 .
 ├── cli/                 # 命令行入口、交互提示和控制台渲染
+├── evaluation/          # 评测协议、实现计划和冻结股票池
 ├── src/                 # 项目核心源码
 │   ├── agents/          # 聊天 Agent 与五角色深度研究复合工具
 │   ├── core/            # 配置、缓存、限流、LLM 和本地记忆
+│   ├── evaluation/      # 固定股票池评测、结算、报告和 CLI runner
 │   └── tools/           # 行情、财务、新闻、技术、筛选和预测工具
 ├── lstm_training/       # LSTM 训练脚本、训练数据、模型和评估结果
 ├── tests/               # Agent、工具、CLI 和降级路径测试
@@ -38,7 +41,7 @@
 └── run_agent.py         # CLI 启动脚本
 ```
 
-本地生成目录不会提交到 Git：`outputs/` 存放运行报告，`data/cache/` 存放 AKShare/Tavily 缓存，`data/memory/` 存放用户运行时状态，`tmp/` 存放临时渲染和编译结果。
+本地生成目录不会提交到 Git：`outputs/` 存放运行报告，`data/cache/` 存放 AKShare/Tavily 缓存，`data/memory/` 存放用户运行时状态，`tmp/` 存放临时渲染和编译结果，`evaluation/data/` 和 `evaluation/reports/` 存放现实性评测的本地记录与报告。`evaluation/stock_pool.json` 是首次运行冻结的 20 股股票池，可以提交以保证答辩复现。
 
 ## 快速开始
 
@@ -76,7 +79,21 @@ python run_agent.py cache clear
 
 # 查看配置状态
 python run_agent.py config status
+
+# 每个交易日收盘且 AKShare 日线更新后运行：先结算，再预测
+python run_agent.py evaluate daily
+
+# 仅重新生成累计评测报告
+python run_agent.py evaluate report
 ```
+
+## 现实性评测
+
+评测入口位于 `src/evaluation`。首次运行 `python run_agent.py evaluate daily` 时，系统会从沪深 300 自动筛选 20 只不同行业、流动性较高的股票，并冻结到 `evaluation/stock_pool.json`；之后每天继续使用同一股票池，不重新抽样。
+
+每日评测只记录下一交易日的看涨/看跌、预计收盘价、预计涨跌幅、价格区间和置信度。完整 Agent 的预测由深度研究证据生成，并与本地 LSTM 参考结果按 85%/15% 融合。系统同时保存 2026-07-14 到 2026-07-23 的阶段趋势观点，7 月 23 日收盘后可对照阶段判断。
+
+`evaluation/data/` 中的预测和结算记录是不可覆盖 JSON，`evaluation/reports/summary.md` 和 `summary.json` 是可重复生成的本地报告。该评测不模拟买入卖出，不计算交易收益或最大回撤；7/14-7/23 结果是阶段趋势评测，不等同于长期收益证明。
 
 ## 测试
 
