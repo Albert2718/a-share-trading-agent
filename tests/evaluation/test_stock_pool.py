@@ -182,6 +182,7 @@ class StockPoolTests(unittest.TestCase):
             history = original_history(code, days, end_date)
             if code == "000001":
                 history.loc[:, "volume"] = 0.0
+                history.loc[:, "amount"] = 0.0
             if code == "000002":
                 history.loc[:, "close"] = float("nan")
             if code == "000003":
@@ -285,6 +286,21 @@ class StockPoolTests(unittest.TestCase):
                     manager.select(selected_at=FIXED_TIME)
 
                 self.assertEqual(manager._liquidity_sources, {})
+
+    def test_accepts_zero_volume_when_amount_is_valid(self):
+        provider = FakePoolProvider(candidate_count=20, industry_count=20, amount_value=1000.0)
+        original_history = provider.raw_history
+
+        def raw_history(code, days, end_date):
+            history = original_history(code, days, end_date)
+            history.loc[:, "volume"] = 0.0
+            return history
+
+        provider.raw_history = raw_history
+
+        entries = StockPoolManager(provider).select(selected_at=FIXED_TIME)
+
+        self.assertEqual(len(entries), 20)
 
     def test_rejects_candidate_when_only_newest_close_is_null(self):
         provider = FakePoolProvider(candidate_count=21, industry_count=21)

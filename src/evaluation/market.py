@@ -133,13 +133,16 @@ class EvaluationMarketData:
             industry = str(row[name_column]).strip()
             if not symbol or not industry:
                 continue
-            members = self._require_frame(
-                ak.index_component_sw(symbol=symbol),
-                f"SW industry members for {symbol}",
-            )
+            try:
+                members = self._require_frame(
+                    ak.index_component_sw(symbol=symbol),
+                    f"SW industry members for {symbol}",
+                )
+            except Exception:
+                continue
             member_code_column = self._find_column(members, ["证券代码", "代码", "code"])
             if member_code_column is None:
-                raise RuntimeError(f"SW industry members response has an invalid schema for {symbol}")
+                continue
             for value in members[member_code_column].dropna():
                 mapping[normalize_a_share_code(str(value))] = industry
         if not mapping:

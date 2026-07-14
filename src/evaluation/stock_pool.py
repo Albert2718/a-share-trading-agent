@@ -187,15 +187,19 @@ class StockPoolManager:
         if valid["date"].min().date() > listing_cutoff:
             return None
         recent = valid.tail(LIQUIDITY_DAYS)
-        if recent.empty or recent["close"].iloc[-1] <= 0 or recent["volume"].sum() <= 0:
+        if recent.empty or recent["close"].iloc[-1] <= 0:
             return None
         if "amount" in recent:
             amount = pd.to_numeric(recent["amount"], errors="coerce")
             if amount.isna().any():
                 return None
+            if amount.sum() <= 0 and recent["volume"].sum() <= 0:
+                return None
             liquidity = float(amount.mean())
             source = "amount"
         else:
+            if recent["volume"].sum() <= 0:
+                return None
             liquidity = float((recent["close"] * recent["volume"]).mean())
             source = "close_x_volume"
         if not math.isfinite(liquidity) or liquidity <= 0:
