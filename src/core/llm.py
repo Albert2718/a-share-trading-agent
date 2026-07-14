@@ -57,6 +57,7 @@ class LLMClient:
             tools=tools,
             tool_choice="auto",
             temperature=temperature,
+            **self._provider_request_options(),
         )
         choices = getattr(response, "choices", None) or []
         if not choices:
@@ -100,6 +101,7 @@ class LLMClient:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
                 ],
+                **self._provider_request_options(),
             )
             data = self._parse_json(self._response_content(response))
             if data is not None:
@@ -140,10 +142,21 @@ class LLMClient:
                     },
                     {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
                 ],
+                **self._provider_request_options(),
             )
             return self._parse_json(self._response_content(response))
         except Exception:
             return None
+
+    def _provider_request_options(self) -> dict[str, Any]:
+        if self._is_deepseek_v4():
+            return {"extra_body": {"thinking": {"type": "disabled"}}}
+        return {}
+
+    def _is_deepseek_v4(self) -> bool:
+        model = (self.model or "").lower()
+        base_url = (self.base_url or "").lower()
+        return "deepseek" in model and ("v4" in model or "deepseek" in base_url)
 
     @staticmethod
     def _response_content(response) -> Optional[str]:

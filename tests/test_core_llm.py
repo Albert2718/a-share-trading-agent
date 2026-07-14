@@ -9,7 +9,11 @@ from src.core.llm import LLMClient
 
 
 class _Completions:
+    def __init__(self):
+        self.last_kwargs = None
+
     def create(self, **kwargs):
+        self.last_kwargs = kwargs
         function = SimpleNamespace(name="sample_tool", arguments='{"code": "600519"}')
         tool_call = SimpleNamespace(id="call-1", function=function)
         message = SimpleNamespace(content="", tool_calls=[tool_call])
@@ -29,7 +33,9 @@ class CoreLLMTests(unittest.TestCase):
     def test_chat_with_tools_normalizes_sdk_tool_calls(self):
         llm = LLMClient.__new__(LLMClient)
         llm.model = "test-model"
-        llm.client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+        llm.base_url = ""
+        completions = _Completions()
+        llm.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
 
         response = llm.chat_with_tools(
             [{"role": "user", "content": "analyze"}],
@@ -41,6 +47,24 @@ class CoreLLMTests(unittest.TestCase):
         self.assertEqual(response.tool_calls[0].id, "call-1")
         self.assertEqual(response.tool_calls[0].name, "sample_tool")
         self.assertEqual(response.tool_calls[0].arguments, {"code": "600519"})
+        self.assertNotIn("extra_body", completions.last_kwargs)
+
+    def test_deepseek_v4_requests_disable_thinking(self):
+        llm = LLMClient.__new__(LLMClient)
+        llm.model = "deepseek-v4-pro"
+        llm.base_url = "https://api.deepseek.com"
+        completions = _Completions()
+        llm.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+        llm.chat_with_tools(
+            [{"role": "user", "content": "analyze"}],
+            [{"type": "function", "function": {"name": "sample_tool"}}],
+        )
+
+        self.assertEqual(
+            completions.last_kwargs["extra_body"],
+            {"thinking": {"type": "disabled"}},
+        )
 
 
 if __name__ == "__main__":
