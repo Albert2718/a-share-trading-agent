@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -31,7 +32,7 @@ class QuantAnalyst:
 
     def analyze(self, candidate: StockCandidate, context: AnalysisContext) -> QuantReport:
         try:
-            history = self._history(candidate.code, context.history_days)
+            history = self._history(candidate.code, context.history_days, context.as_of)
             if len(history) < 20:
                 return QuantReport(
                     code=candidate.code,
@@ -39,13 +40,33 @@ class QuantAnalyst:
                     status="data_insufficient",
                     error="history rows fewer than 20",
                 )
-            return self._build_report(candidate, history)
+            return self._build_report(
+                candidate,
+                history,
+                include_model_signal=context.include_model_signal,
+            )
         except Exception as exc:
             return QuantReport(code=candidate.code, name=candidate.name, status="error", error=str(exc))
 
-    def _history(self, code: str, days: int) -> pd.DataFrame:
+    def _history(self, code: str, days: int, as_of: str = "") -> pd.DataFrame:
         try:
-            history = self.akshare_tools.history(code, days=days)
+            kwargs = {"days": days}
+            as_of_date = self._as_of_date(as_of)
+            if as_of_date is not None:
+                kwargs.update(
+                    end_date=as_of_date,
+                    allow_stale_fallback=False,
+                )
+            history = self.akshare_tools.history(code, **kwargs)
+            if as_of_date is not None:
+                parsed_dates = pd.to_datetime(history.get("date"), errors="coerce")
+                if len(parsed_dates) != len(history) or parsed_dates.isna().any():
+                    raise RuntimeError("history contains invalid dates")
+                latest_date = parsed_dates.max().date()
+                if latest_date != as_of_date:
+                    raise RuntimeError(
+                        f"history latest date {latest_date} does not match as_of {as_of_date}"
+                    )
             if len(history) >= 20:
                 return history
             raise RuntimeError(f"history rows fewer than 20: {len(history)}")
@@ -68,7 +89,12 @@ class QuantAnalyst:
             }
         )
 
-    def _build_report(self, candidate: StockCandidate, history: pd.DataFrame) -> QuantReport:
+    def _build_report(
+        self,
+        candidate: StockCandidate,
+        history: pd.DataFrame,
+        include_model_signal: bool = True,
+    ) -> QuantReport:
         close = history["close"].astype(float)
         volume = history["volume"].astype(float).replace(0, np.nan)
         latest_close = float(close.iloc[-1])
@@ -78,7 +104,11 @@ class QuantAnalyst:
         volume_ratio = self._volume_ratio(volume)
         rsi_14 = self._rsi(close, 14)
         macd_hist = self._macd_hist(close)
-        model_return = self.model_tool.predict_return(close.tail(14).to_numpy(dtype=np.float32))
+        model_return = (
+            self.model_tool.predict_return(close.tail(14).to_numpy(dtype=np.float32))
+            if include_model_signal
+            else None
+        )
 
         score = 50.0
         factors = []
@@ -141,6 +171,18 @@ class QuantAnalyst:
             key_factors=factors[:8],
             risk_flags=risks,
         )
+
+    @staticmethod
+    def _as_of_date(value: str) -> date | None:
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+            except ValueError as exc:
+                raise ValueError("as_of must be an ISO date or datetime") from exc
 
     def _period_return(self, close: pd.Series, days: int) -> Optional[float]:
         if len(close) <= days:

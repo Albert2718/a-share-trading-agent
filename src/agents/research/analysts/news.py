@@ -1,10 +1,13 @@
 ﻿from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from ..prompts import NEWS_ANALYST_SYSTEM
 from ..schemas import AnalysisContext, EventCard, NewsReport, StockCandidate
+from ..utils import redact_recursive, sanitize_secret_text
 from src.core import DataAccessLayer, LLMClient, load_config
 from src.tools.market_data import AkshareMarketData
 from src.tools.news_search import NewsSearchTool
@@ -51,18 +54,28 @@ class NewsAnalyst:
             try:
                 raw_items.extend(self._akshare_news(candidate))
             except Exception as exc:
-                source_errors.append(f"akshare: {exc}")
+                source_errors.append(f"akshare: {self._sanitize_text(str(exc))}")
             if self.tavily_api_key:
                 try:
                     raw_items.extend(self._tavily_search(candidate))
                 except Exception as exc:
-                    source_errors.append(f"tavily: {exc}")
+                    source_errors.append(f"tavily: {self._sanitize_text(str(exc))}")
+            raw_items, cutoff_warnings = self._filter_by_cutoff(
+                raw_items,
+                context.cutoff_at,
+            )
+            source_errors.extend(cutoff_warnings)
             events = self._compress_to_events(candidate, raw_items, use_llm=context.use_llm)
+            events, event_warnings = self._filter_events_by_cutoff(
+                events,
+                context.cutoff_at,
+            )
+            source_errors.extend(event_warnings)
             score = self._score_events(events)
             sentiment = "positive" if score > 20 else "negative" if score < -20 else "neutral"
             confidence = "high" if len(events) >= 3 else "medium" if events else "low"
             status = "ok" if raw_items else "unavailable"
-            error = "; ".join(source_errors) if status != "ok" and source_errors else None
+            error = "; ".join(source_errors) if source_errors else None
             if status != "ok" and not error:
                 error = "news sources unavailable"
             return NewsReport(
@@ -79,6 +92,80 @@ class NewsAnalyst:
             )
         except Exception as exc:
             return NewsReport(code=candidate.code, name=candidate.name, status="error", error=str(exc))
+
+    def _filter_by_cutoff(
+        self,
+        raw_items: List[Dict],
+        cutoff_at: str,
+    ) -> tuple[List[Dict], List[str]]:
+        if not cutoff_at:
+            return raw_items, []
+        cutoff = self._parse_timestamp(cutoff_at)
+        if cutoff is None:
+            raise ValueError("cutoff_at must be an ISO datetime with timezone")
+
+        accepted = []
+        counts = {
+            "news_after_cutoff": 0,
+            "news_timestamp_blank": 0,
+            "news_timestamp_unparseable": 0,
+        }
+        for item in raw_items:
+            raw_timestamp = item.get("published_date") or item.get("published_at")
+            if raw_timestamp is None or not str(raw_timestamp).strip():
+                counts["news_timestamp_blank"] += 1
+                continue
+            timestamp = self._parse_timestamp(str(raw_timestamp))
+            if timestamp is None:
+                counts["news_timestamp_unparseable"] += 1
+                continue
+            if timestamp > cutoff:
+                counts["news_after_cutoff"] += 1
+                continue
+            accepted.append(item)
+        warnings = [f"{name}={count}" for name, count in counts.items() if count]
+        return accepted, warnings
+
+    def _filter_events_by_cutoff(
+        self,
+        events: List[EventCard],
+        cutoff_at: str,
+    ) -> tuple[List[EventCard], List[str]]:
+        if not cutoff_at:
+            return events, []
+        cutoff = self._parse_timestamp(cutoff_at)
+        if cutoff is None:
+            raise ValueError("cutoff_at must be an ISO datetime with timezone")
+        accepted = []
+        blank = unparseable = future = 0
+        for event in events:
+            if not event.published_at.strip():
+                blank += 1
+                continue
+            timestamp = self._parse_timestamp(event.published_at)
+            if timestamp is None:
+                unparseable += 1
+                continue
+            if timestamp > cutoff:
+                future += 1
+                continue
+            accepted.append(event)
+        warnings = []
+        if future:
+            warnings.append(f"news_after_cutoff={future}")
+        if blank:
+            warnings.append(f"news_timestamp_blank={blank}")
+        if unparseable:
+            warnings.append(f"news_timestamp_unparseable={unparseable}")
+        return accepted, warnings
+
+    @staticmethod
+    def _parse_timestamp(value: str) -> datetime | None:
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else None
 
     def _akshare_news(self, candidate: StockCandidate) -> List[Dict]:
         rows = self.akshare_tools.stock_news(candidate.code)
@@ -111,9 +198,9 @@ class NewsAnalyst:
         compact_items = []
         seen_keys = set()
         for item in raw_items:
-            title = str(item.get("title") or "").strip()
-            content = str(item.get("content") or "").strip()
-            url = str(item.get("url") or "").strip()
+            title = self._sanitize_text(str(item.get("title") or "").strip())
+            content = self._sanitize_text(str(item.get("content") or "").strip())
+            url = self._sanitize_url(str(item.get("url") or "").strip())
             published_at = str(item.get("published_date") or item.get("published_at") or "").strip()
             text = self._trim_text(f"{title}. {content}", limit=1200)
             dedupe_key = re.sub(r"\W+", "", title.lower())[:80] or url
@@ -166,7 +253,10 @@ class NewsAnalyst:
             llm = self.llm_client or LLMClient(model=self.news_agent_model)
             payload = llm.structured(
                 system_prompt=NEWS_ANALYST_SYSTEM,
-                user_payload={"stock": {"code": candidate.code, "name": candidate.name}, "news": compact_items},
+                user_payload=redact_recursive({
+                    "stock": {"code": candidate.code, "name": candidate.name},
+                    "news": compact_items,
+                }),
                 schema=schema,
                 max_tokens=900,
             )
@@ -242,6 +332,25 @@ class NewsAnalyst:
 
     def _trim_text(self, text: str, limit: int) -> str:
         return re.sub(r"\s+", " ", text).strip()[:limit]
+
+    @staticmethod
+    def _sanitize_text(value: str) -> str:
+        return sanitize_secret_text(value)
+
+    @staticmethod
+    def _sanitize_url(value: str) -> str:
+        if not value:
+            return ""
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            return "[REDACTED_URL]"
+        if not parsed.hostname:
+            return NewsAnalyst._sanitize_text(value)
+        host = parsed.hostname
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
 
     def _value(self, row: Dict, names: List[str]):
         for name in names:

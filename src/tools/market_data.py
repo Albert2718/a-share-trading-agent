@@ -131,10 +131,17 @@ class AkshareMarketData:
             }
         return {}
 
-    def history(self, code: str, days: int = 160) -> pd.DataFrame:
+    def history(
+        self,
+        code: str,
+        days: int = 160,
+        adjust: str = "qfq",
+        end_date: date | str | None = None,
+        allow_stale_fallback: bool = True,
+    ) -> pd.DataFrame:
         norm = normalize_a_share_code(code)
-        end = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
+        end_value = pd.Timestamp(end_date or self._now_fn().date()).strftime("%Y%m%d")
+        start_value = (pd.Timestamp(end_value) - timedelta(days=days * 2)).strftime("%Y%m%d")
 
         def loader():
             ak = self._require_akshare()
@@ -145,27 +152,27 @@ class AkshareMarketData:
                     lambda: ak.stock_zh_a_hist(
                         symbol=norm,
                         period="daily",
-                        start_date=start,
-                        end_date=end,
-                        adjust="qfq",
+                        start_date=start_value,
+                        end_date=end_value,
+                        adjust=adjust,
                     ),
                 ),
                 (
                     "tencent",
                     lambda: ak.stock_zh_a_hist_tx(
                         symbol=self._market_symbol(norm),
-                        start_date=start,
-                        end_date=end,
-                        adjust="qfq",
+                        start_date=start_value,
+                        end_date=end_value,
+                        adjust=adjust,
                     ),
                 ),
                 (
                     "sina",
                     lambda: ak.stock_zh_a_daily(
                         symbol=self._market_symbol(norm),
-                        start_date=start,
-                        end_date=end,
-                        adjust="qfq",
+                        start_date=start_value,
+                        end_date=end_value,
+                        adjust=adjust,
                     ),
                 ),
             ]:
@@ -179,7 +186,16 @@ class AkshareMarketData:
                     errors.append(f"{provider}: {exc}")
             raise RuntimeError("all history providers failed; " + " | ".join(errors[-3:]))
 
-        records = self.data_access.fetch("akshare", "stock_zh_a_hist", f"{norm}_{days}", 1800, 1.5, loader)
+        cache_key = f"{norm}_{days}_{adjust or 'raw'}_{end_value}"
+        records = self.data_access.fetch(
+            "akshare",
+            "stock_zh_a_hist",
+            cache_key,
+            1800,
+            1.5,
+            loader,
+            fallback="cache" if allow_stale_fallback else "raise",
+        )
         return self._normalize_history(pd.DataFrame(records)).tail(days).reset_index(drop=True)
 
     def valuation(self, code: str) -> List[Dict[str, Any]]:
@@ -274,6 +290,7 @@ class AkshareMarketData:
     def _normalize_history(self, df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:
             return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+        has_amount = "成交额" in df.columns or "amount" in df.columns
         col_map = {
             "日期": "date",
             "date": "date",
@@ -287,13 +304,18 @@ class AkshareMarketData:
             "close": "close",
             "成交量": "volume",
             "volume": "volume",
+            "成交额": "amount",
+            "amount": "amount",
         }
         result = df.rename(columns={key: value for key, value in col_map.items() if key in df.columns})
-        for col in ["date", "open", "high", "low", "close", "volume"]:
+        columns = ["date", "open", "high", "low", "close", "volume"]
+        if has_amount:
+            columns.append("amount")
+        for col in columns:
             if col not in result.columns:
                 result[col] = 0.0 if col == "volume" else None
-        result = result[["date", "open", "high", "low", "close", "volume"]].copy()
-        for col in ["open", "high", "low", "close", "volume"]:
+        result = result[columns].copy()
+        for col in [column for column in columns if column != "date"]:
             result[col] = pd.to_numeric(result[col], errors="coerce")
         return result.dropna(subset=["close"]).reset_index(drop=True)
 

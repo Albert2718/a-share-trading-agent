@@ -1,0 +1,234 @@
+{
+  "rule_version": "1.0",
+  "constituent_source_date": "2026-07-14",
+  "selected_at": "2026-07-14T15:30:00+08:00",
+  "criteria": {
+    "target_size": 20,
+    "minimum_valid_rows": 250,
+    "minimum_listing_years": 2,
+    "liquidity_days": 60,
+    "maximum_per_industry_after_fill": 2
+  },
+  "entries": [
+    {
+      "code": "000100",
+      "name": "TCL科技",
+      "industry": "电子",
+      "liquidity": 5575610315.331665,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "000002",
+      "name": "万科A",
+      "industry": "房地产",
+      "liquidity": 483064612.8518333,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "688126",
+      "name": "沪硅产业",
+      "industry": "电子",
+      "liquidity": 174998156.75,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "688271",
+      "name": "联影医疗",
+      "industry": "医药生物",
+      "liquidity": 8187267.033333333,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "600010",
+      "name": "包钢股份",
+      "industry": "钢铁",
+      "liquidity": 7125602.766666667,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "000630",
+      "name": "铜陵有色",
+      "industry": "有色金属",
+      "liquidity": 4356399.65,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "600221",
+      "name": "海航控股",
+      "industry": "交通运输",
+      "liquidity": 3902677.1666666665,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "601899",
+      "name": "紫金矿业",
+      "industry": "有色金属",
+      "liquidity": 3185157.816666667,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "688506",
+      "name": "百利天恒",
+      "industry": "医药生物",
+      "liquidity": 2526723.4166666665,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "600115",
+      "name": "中国东航",
+      "industry": "交通运输",
+      "liquidity": 2364035.566666667,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "600795",
+      "name": "国电电力",
+      "industry": "公用事业",
+      "liquidity": 2026832.5166666666,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "600011",
+      "name": "华能国际",
+      "industry": "公用事业",
+      "liquidity": 1953236.3,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "002050",
+      "name": "三花智控",
+      "industry": "家用电器",
+      "liquidity": 1446023.85,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "600048",
+      "name": "保利发展",
+      "industry": "房地产",
+      "liquidity": 1313433.7,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "000792",
+      "name": "盐湖股份",
+      "industry": "基础化工",
+      "liquidity": 1040986.9,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "600019",
+      "name": "宝钢股份",
+      "industry": "钢铁",
+      "liquidity": 1003626.95,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "600989",
+      "name": "宝丰能源",
+      "industry": "基础化工",
+      "liquidity": 907781.0166666667,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "600887",
+      "name": "伊利股份",
+      "industry": "食品饮料",
+      "liquidity": 602420.2166666667,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "300498",
+      "name": "温氏股份",
+      "industry": "农林牧渔",
+      "liquidity": 560583.3,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    },
+    {
+      "code": "002714",
+      "name": "牧原股份",
+      "industry": "农林牧渔",
+      "liquidity": 551832.4666666667,
+      "source_date": "2026-07-14",
+      "selected_at": "2026-07-14T15:30:00+08:00",
+      "selection_reason": "industry_liquidity_winner",
+      "rule_version": "1.0",
+      "liquidity_source": "amount"
+    }
+  ]
+}

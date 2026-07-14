@@ -7,6 +7,12 @@ from src.agents.research.schemas import FinalReport, StockDecision, to_dict
 
 
 class CLITests(unittest.TestCase):
+    def test_evaluate_arguments_parse(self):
+        args = build_parser().parse_args(["evaluate", "daily"])
+
+        self.assertEqual((args.command, args.action), ("evaluate", "daily"))
+        self.assertEqual(args.root, "evaluation")
+
     def test_analyze_arguments_build_research_context(self):
         args = build_parser().parse_args(
             [

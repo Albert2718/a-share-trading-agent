@@ -1,0 +1,482 @@
+from __future__ import annotations
+
+import json
+import unittest
+from copy import deepcopy
+from datetime import date, datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import pandas as pd
+
+from src.evaluation.market import EvaluationMarketData
+from src.evaluation.stock_pool import StockPoolManager
+
+
+FIXED_TIME = datetime(2026, 7, 14, 16, 0, 0)
+
+
+class FakePoolProvider:
+    def __init__(
+        self,
+        candidate_count: int,
+        industry_count: int,
+        omit_amount: bool = False,
+        amount_value: float | None = None,
+    ):
+        self.candidate_count = candidate_count
+        self.industry_count = industry_count
+        self.omit_amount = omit_amount
+        self.amount_value = amount_value
+        self.constituent_calls = 0
+        self.industry_calls = 0
+        self.history_calls = 0
+        self.trade_date_calls = 0
+
+    def csi300_constituents(self):
+        self.constituent_calls += 1
+        return [
+            {
+                "code": f"{number:06d}",
+                "name": f"Company {number}",
+                "source_date": date(2026, 7, 14),
+            }
+            for number in range(1, self.candidate_count + 1)
+        ]
+
+    def industry_map(self):
+        self.industry_calls += 1
+        return {
+            f"{number:06d}": f"Industry {number % self.industry_count:02d}"
+            for number in range(1, self.candidate_count + 1)
+        }
+
+    def trade_dates(self):
+        self.trade_date_calls += 1
+        return [date(2026, 7, 13), date(2026, 7, 14)]
+
+    def raw_history(self, code, days, end_date):
+        self.history_calls += 1
+        amount = self.amount_value if self.amount_value is not None else int(code) * 1000.0
+        rows = [
+            {
+                "date": trade_date,
+                "close": 10.0,
+                "volume": 100.0,
+                **({} if self.omit_amount else {"amount": amount}),
+            }
+            for trade_date in pd.bdate_range(end=end_date, periods=523)
+        ]
+        return pd.DataFrame(rows)
+
+
+class FakeDataAccess:
+    def __init__(self):
+        self.calls = []
+
+    def fetch(
+        self,
+        namespace,
+        endpoint,
+        key,
+        ttl_seconds,
+        min_interval,
+        loader,
+        **kwargs,
+    ):
+        self.calls.append(
+            {
+                "namespace": namespace,
+                "endpoint": endpoint,
+                "key": key,
+                "ttl_seconds": ttl_seconds,
+                "min_interval": min_interval,
+                **kwargs,
+            }
+        )
+        return loader()
+
+
+class FakeEvaluationAkshare:
+    def __init__(self):
+        self.constituents = pd.DataFrame(
+            [{"成分券代码": "600519", "成分券名称": "贵州茅台"}]
+        )
+        self.industry_names = pd.DataFrame([{"板块名称": "白酒"}])
+        self.industry_members = {"白酒": pd.DataFrame([{"代码": "600519"}])}
+        self.sw_industries = pd.DataFrame([{"行业代码": "801120.SI", "行业名称": "食品饮料"}])
+        self.sw_members = {"801120": pd.DataFrame([{"证券代码": "600519"}])}
+        self.raw_daily = pd.DataFrame(
+            [{"date": date(2026, 7, 14), "open": 10.0, "high": 10.5, "low": 9.9, "close": 10.2, "volume": 100.0, "amount": 1020.0}]
+        )
+        self.trade_calendar = pd.DataFrame(
+            [{"trade_date": "2026-07-13"}, {"trade_date": "2026-07-14"}]
+        )
+        self.constituent_symbols = []
+        self.industry_symbols = []
+
+    def index_stock_cons_csindex(self, symbol):
+        self.constituent_symbols.append(symbol)
+        return self.constituents
+
+    def stock_board_industry_name_em(self):
+        return self.industry_names
+
+    def stock_board_industry_cons_em(self, symbol):
+        self.industry_symbols.append(symbol)
+        return self.industry_members[symbol]
+
+    def sw_index_first_info(self):
+        return self.sw_industries
+
+    def index_component_sw(self, symbol):
+        self.industry_symbols.append(symbol)
+        return self.sw_members[symbol]
+
+    def stock_zh_a_daily(self, symbol, start_date, end_date, adjust):
+        return self.raw_daily
+
+    def tool_trade_date_hist_sina(self):
+        return self.trade_calendar
+
+
+class FakeHistoricalMarketData:
+    def __init__(self):
+        self.calls = []
+
+    def history(self, code, **kwargs):
+        self.calls.append({"code": code, **kwargs})
+        return pd.DataFrame(
+            [{"date": "2026-07-14", "close": 10.0, "volume": 100.0}]
+        )
+
+
+class StockPoolTests(unittest.TestCase):
+    def test_selects_twenty_distinct_industries_before_duplicates(self):
+        provider = FakePoolProvider(candidate_count=30, industry_count=25)
+
+        entries = StockPoolManager(provider).select(selected_at=FIXED_TIME)
+
+        self.assertEqual(len(entries), 20)
+        self.assertEqual(len({entry.industry for entry in entries}), 20)
+        self.assertEqual([entry.code for entry in entries], sorted(
+            (entry.code for entry in entries), reverse=True
+        ))
+
+    def test_fills_remaining_pool_with_no_more_than_two_per_industry(self):
+        provider = FakePoolProvider(candidate_count=30, industry_count=10)
+
+        entries = StockPoolManager(provider).select(selected_at=FIXED_TIME)
+
+        self.assertEqual(len(entries), 20)
+        self.assertLessEqual(
+            max(sum(entry.industry == industry for entry in entries) for industry in {entry.industry for entry in entries}),
+            2,
+        )
+
+    def test_excludes_st_short_history_missing_close_and_zero_volume(self):
+        provider = FakePoolProvider(candidate_count=24, industry_count=24)
+        original_history = provider.raw_history
+
+        def raw_history(code, days, end_date):
+            history = original_history(code, days, end_date)
+            if code == "000001":
+                history.loc[:, "volume"] = 0.0
+                history.loc[:, "amount"] = 0.0
+            if code == "000002":
+                history.loc[:, "close"] = float("nan")
+            if code == "000003":
+                return history.tail(249)
+            return history
+
+        provider.raw_history = raw_history
+        original_constituents = provider.csi300_constituents
+
+        def constituents():
+            rows = original_constituents()
+            rows[3]["name"] = "ST Stock 4"
+            rows[4]["name"] = "退市Stock 5"
+            return rows
+
+        provider.csi300_constituents = constituents
+
+        with self.assertRaisesRegex(RuntimeError, "exactly 20 unique stocks"):
+            StockPoolManager(provider).select(selected_at=FIXED_TIME)
+
+    def test_select_rejects_fewer_than_twenty_stocks(self):
+        provider = FakePoolProvider(candidate_count=19, industry_count=19)
+
+        with self.assertRaisesRegex(RuntimeError, "exactly 20 unique stocks"):
+            StockPoolManager(provider).select(selected_at=FIXED_TIME)
+
+    def test_freeze_does_not_write_incomplete_pool(self):
+        with TemporaryDirectory(dir=Path(__file__).resolve().parents[2]) as root:
+            provider = FakePoolProvider(candidate_count=19, industry_count=19)
+            path = Path(root) / "stock_pool.json"
+
+            with self.assertRaisesRegex(RuntimeError, "exactly 20 unique stocks"):
+                StockPoolManager(provider).freeze(path, FIXED_TIME)
+
+            self.assertFalse(path.exists())
+
+    def test_freeze_reuses_existing_pool_without_refetch(self):
+        with TemporaryDirectory(dir=Path(__file__).resolve().parents[2]) as root:
+            provider = FakePoolProvider(candidate_count=25, industry_count=25)
+            manager = StockPoolManager(provider)
+            path = Path(root) / "stock_pool.json"
+
+            first = manager.freeze(path, FIXED_TIME)
+            second = manager.freeze(path, FIXED_TIME)
+
+            self.assertEqual(first, second)
+            self.assertEqual(provider.constituent_calls, 1)
+            self.assertEqual(manager.load(path), first)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["rule_version"], "1.0")
+            self.assertEqual(payload["selected_at"], FIXED_TIME.isoformat())
+            self.assertEqual(len(payload["entries"]), 20)
+
+    def test_load_rejects_wrong_cardinality_and_duplicate_codes(self):
+        with TemporaryDirectory(dir=Path(__file__).resolve().parents[2]) as root:
+            provider = FakePoolProvider(candidate_count=20, industry_count=20)
+            manager = StockPoolManager(provider)
+            path = Path(root) / "stock_pool.json"
+            manager.freeze(path, FIXED_TIME)
+            valid_payload = json.loads(path.read_text(encoding="utf-8"))
+
+            malformed_payloads = []
+            too_short = deepcopy(valid_payload)
+            too_short["entries"].pop()
+            malformed_payloads.append(too_short)
+            duplicate = deepcopy(valid_payload)
+            duplicate["entries"][19]["code"] = duplicate["entries"][0]["code"]
+            malformed_payloads.append(duplicate)
+
+            for index, payload in enumerate(malformed_payloads):
+                malformed_path = Path(root) / f"malformed-{index}.json"
+                malformed_path.write_text(
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+                )
+                with self.subTest(index=index), self.assertRaisesRegex(
+                    ValueError, "invalid frozen stock pool"
+                ):
+                    manager.load(malformed_path)
+
+    def test_records_close_times_volume_when_amount_is_unavailable(self):
+        with TemporaryDirectory(dir=Path(__file__).resolve().parents[2]) as root:
+            provider = FakePoolProvider(candidate_count=20, industry_count=20, omit_amount=True)
+            path = Path(root) / "stock_pool.json"
+
+            StockPoolManager(provider).freeze(path, FIXED_TIME)
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["entries"][0]["liquidity_source"], "close_x_volume")
+
+    def test_present_zero_or_invalid_amount_does_not_use_fallback(self):
+        for amount in (0.0, float("nan")):
+            with self.subTest(amount=amount):
+                provider = FakePoolProvider(
+                    candidate_count=20,
+                    industry_count=20,
+                    amount_value=amount,
+                )
+                manager = StockPoolManager(provider)
+
+                with self.assertRaisesRegex(RuntimeError, "exactly 20 unique stocks"):
+                    manager.select(selected_at=FIXED_TIME)
+
+                self.assertEqual(manager._liquidity_sources, {})
+
+    def test_accepts_zero_volume_when_amount_is_valid(self):
+        provider = FakePoolProvider(candidate_count=20, industry_count=20, amount_value=1000.0)
+        original_history = provider.raw_history
+
+        def raw_history(code, days, end_date):
+            history = original_history(code, days, end_date)
+            history.loc[:, "volume"] = 0.0
+            return history
+
+        provider.raw_history = raw_history
+
+        entries = StockPoolManager(provider).select(selected_at=FIXED_TIME)
+
+        self.assertEqual(len(entries), 20)
+
+    def test_rejects_candidate_when_only_newest_close_is_null(self):
+        provider = FakePoolProvider(candidate_count=21, industry_count=21)
+        original_history = provider.raw_history
+
+        def raw_history(code, days, end_date):
+            history = original_history(code, days, end_date)
+            if code == "000021":
+                history.loc[history.index[-1], "close"] = float("nan")
+            return history
+
+        provider.raw_history = raw_history
+
+        entries = StockPoolManager(provider).select(selected_at=FIXED_TIME)
+
+        self.assertEqual(len(entries), 20)
+        self.assertNotIn("000021", {entry.code for entry in entries})
+
+    def test_rejects_candidate_whose_last_row_predates_expected_trade_date(self):
+        provider = FakePoolProvider(candidate_count=21, industry_count=21)
+        original_history = provider.raw_history
+
+        def raw_history(code, days, end_date):
+            history = original_history(code, days, end_date)
+            if code == "000021":
+                history.loc[history.index[-1], "date"] = pd.Timestamp("2026-07-13")
+            return history
+
+        provider.raw_history = raw_history
+
+        entries = StockPoolManager(provider).select(selected_at=FIXED_TIME)
+
+        self.assertEqual(len(entries), 20)
+        self.assertNotIn("000021", {entry.code for entry in entries})
+
+    def test_uses_latest_trade_date_on_nontrading_selected_date(self):
+        provider = FakePoolProvider(candidate_count=20, industry_count=20)
+        original_history = provider.raw_history
+        calendar_calls = []
+
+        def trade_dates():
+            calendar_calls.append(True)
+            return [date(2026, 7, 14)]
+
+        provider.trade_dates = trade_dates
+
+        def raw_history(code, days, end_date):
+            return original_history(code, days, date(2026, 7, 14))
+
+        provider.raw_history = raw_history
+
+        entries = StockPoolManager(provider).select(
+            selected_at=datetime(2026, 7, 15, 16, 0, 0)
+        )
+
+        self.assertEqual(len(entries), 20)
+        self.assertEqual(calendar_calls, [True])
+
+
+class EvaluationMarketDataTests(unittest.TestCase):
+    def make_adapter(self, akshare=None, data_access=None):
+        adapter = EvaluationMarketData(
+            data_access=data_access or FakeDataAccess(),
+            now_fn=lambda: FIXED_TIME,
+        )
+        adapter._ak = akshare or FakeEvaluationAkshare()
+        return adapter
+
+    def test_parses_csi300_industries_and_trade_calendar_with_cache_contracts(self):
+        data_access = FakeDataAccess()
+        akshare = FakeEvaluationAkshare()
+        adapter = self.make_adapter(akshare=akshare, data_access=data_access)
+
+        constituents = adapter.csi300_constituents()
+        industries = adapter.industry_map()
+        trade_dates = adapter.trade_dates()
+
+        self.assertEqual(constituents, [{
+            "code": "600519",
+            "name": "贵州茅台",
+            "source_date": date(2026, 7, 14),
+        }])
+        self.assertEqual(industries, {"600519": "白酒"})
+        self.assertEqual(trade_dates, [date(2026, 7, 13), date(2026, 7, 14)])
+        self.assertEqual(akshare.constituent_symbols, ["000300"])
+        self.assertEqual(akshare.industry_symbols, ["白酒"])
+        self.assertEqual(
+            [
+                (call["endpoint"], call["key"], call["ttl_seconds"])
+                for call in data_access.calls
+            ],
+            [
+                ("index_stock_cons_csindex", "2026-07-14", 86400),
+                ("stock_board_industry", "all", 7 * 86400),
+                ("tool_trade_date_hist_sina", "2026-07-14", 86400),
+            ],
+        )
+
+    def test_csi300_rejects_empty_and_invalid_schema(self):
+        for frame in (pd.DataFrame(), pd.DataFrame([{"wrong": "value"}])):
+            with self.subTest(columns=list(frame.columns)):
+                akshare = FakeEvaluationAkshare()
+                akshare.constituents = frame
+                with self.assertRaises(RuntimeError):
+                    self.make_adapter(akshare=akshare).csi300_constituents()
+
+    def test_trade_calendar_rejects_empty_and_invalid_schema(self):
+        for frame in (pd.DataFrame(), pd.DataFrame([{"wrong": "value"}])):
+            with self.subTest(columns=list(frame.columns)):
+                akshare = FakeEvaluationAkshare()
+                akshare.trade_calendar = frame
+                with self.assertRaises(RuntimeError):
+                    self.make_adapter(akshare=akshare).trade_dates()
+
+    def test_industry_map_rejects_empty_and_invalid_schemas(self):
+        cases = [
+            (pd.DataFrame(), {"白酒": pd.DataFrame([{"代码": "600519"}])}),
+            (pd.DataFrame([{"wrong": "value"}]), {"白酒": pd.DataFrame([{"代码": "600519"}])}),
+            (pd.DataFrame([{"板块名称": "白酒"}]), {"白酒": pd.DataFrame()}),
+            (pd.DataFrame([{"板块名称": "白酒"}]), {"白酒": pd.DataFrame([{"wrong": "value"}])}),
+        ]
+        for names, members in cases:
+            with self.subTest(name_columns=list(names.columns), members=members):
+                akshare = FakeEvaluationAkshare()
+                akshare.industry_names = names
+                akshare.industry_members = members
+                akshare.sw_industries = pd.DataFrame()
+                with self.assertRaises(RuntimeError):
+                    self.make_adapter(akshare=akshare).industry_map()
+
+    def test_industry_map_falls_back_to_sw_components_when_em_unavailable(self):
+        akshare = FakeEvaluationAkshare()
+        akshare.industry_names = pd.DataFrame()
+        adapter = self.make_adapter(akshare=akshare)
+
+        self.assertEqual(adapter.industry_map(), {"600519": "食品饮料"})
+        self.assertIn("801120", akshare.industry_symbols)
+
+    def test_raw_history_disables_inner_stale_cache_fallback(self):
+        market_data = FakeHistoricalMarketData()
+        adapter = EvaluationMarketData(
+            data_access=FakeDataAccess(),
+            market_data=market_data,
+            now_fn=lambda: FIXED_TIME,
+        )
+
+        adapter.raw_history("600519", days=60, end_date=date(2026, 7, 14))
+
+        self.assertFalse(market_data.calls[0]["allow_stale_fallback"])
+
+    def test_raw_history_falls_back_to_sina_daily_when_inner_history_fails(self):
+        class FailingHistoricalMarketData(FakeHistoricalMarketData):
+            def history(self, code, **kwargs):
+                self.calls.append({"code": code, **kwargs})
+                raise RuntimeError("eastmoney unavailable")
+
+        akshare = FakeEvaluationAkshare()
+        adapter = EvaluationMarketData(
+            data_access=FakeDataAccess(),
+            market_data=FailingHistoricalMarketData(),
+            now_fn=lambda: FIXED_TIME,
+        )
+        adapter._ak = akshare
+
+        history = adapter.raw_history("600519", days=60, end_date=date(2026, 7, 14))
+
+        self.assertEqual(history.iloc[-1]["close"], 10.2)
+        self.assertIn("amount", history.columns)
+
+    def test_requirements_pin_verified_akshare_version(self):
+        requirements = (
+            Path(__file__).resolve().parents[2] / "requirements.txt"
+        ).read_text(encoding="utf-8").splitlines()
+
+        self.assertIn("akshare==1.18.64", requirements)
+
+
+if __name__ == "__main__":
+    unittest.main()

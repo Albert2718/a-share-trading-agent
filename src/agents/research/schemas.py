@@ -17,6 +17,8 @@ class AnalysisContext:
     risk_profile: str = "balanced"
     use_llm: bool = True
     as_of: str = ""
+    cutoff_at: str = ""
+    include_model_signal: bool = True
     cache_policy: str = "default"
     history_days: int = 160
 
