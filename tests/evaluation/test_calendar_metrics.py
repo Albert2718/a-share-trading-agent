@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date
+from datetime import date, datetime
 import json
 
 from src.evaluation.calendar import next_trade_date
@@ -97,6 +97,21 @@ class CalendarMetricTests(unittest.TestCase):
             "tags": ["market"],
             "nested": {"source_id": "a1"},
         })
+
+    def test_evidence_timestamps_serialize_as_iso_strings(self):
+        evidence = EvidenceItem(
+            source="report",
+            published_at=datetime(2026, 7, 17, 9, 30),
+            retrieved_at=datetime(2026, 7, 17, 10, 15, 30),
+        )
+
+        try:
+            serialized = json.loads(json.dumps(evidence.to_dict()))
+        except TypeError as exc:
+            self.fail(f"EvidenceItem.to_dict() is not JSON-compatible: {exc}")
+
+        self.assertEqual(serialized["published_at"], "2026-07-17T09:30:00")
+        self.assertEqual(serialized["retrieved_at"], "2026-07-17T10:15:30")
 
     def test_next_trade_date_skips_weekend(self):
         dates = [date(2026, 7, 17), date(2026, 7, 20)]

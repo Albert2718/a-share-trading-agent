@@ -56,8 +56,12 @@ class EvidenceItem:
         return {
             "source": self.source,
             "summary": self.summary,
-            "published_at": self.published_at,
-            "retrieved_at": self.retrieved_at,
+            "published_at": (
+                self.published_at.isoformat() if self.published_at else None
+            ),
+            "retrieved_at": (
+                self.retrieved_at.isoformat() if self.retrieved_at else None
+            ),
             "evidence_type": self.evidence_type,
             "metadata": _thaw_metadata(self.metadata),
         }
