@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 from .calendar import next_trade_date
 from .forecasting import EvaluationForecaster
 from .market import EvaluationMarketData
@@ -55,16 +57,20 @@ class EvaluationRunner:
         entries = self.pool_manager.freeze(self.root / "pools" / f"{as_of.isoformat()}.json", local_now)
         if len(entries) != POOL_SIZE:
             raise RuntimeError(f"frozen stock pool must contain {POOL_SIZE} entries")
+        self._require_provider_data_complete(as_of, entries)
 
         self.settlement.settle_due(latest_trade_date)
         target = next_trade_date(self.market_data.trade_dates(), as_of)
-        records, errors = self._forecast_missing(entries, as_of, target, local_now)
 
-        # Storage appends must remain ordered and single-threaded for its hash chain.
-        for record in sorted(records, key=lambda item: item.prediction_id):
-            self.storage.append_prediction(record)
+        errors: list[str] = []
+        for kind in ("stage", "next_day"):
+            records, kind_errors = self._forecast_missing_kind(entries, as_of, target, kind, local_now)
+            errors.extend(kind_errors)
+            # Storage appends must remain ordered and single-threaded for its hash chain.
+            for record in sorted(records, key=lambda item: item.prediction_id):
+                self.storage.append_prediction(record)
 
-        successful = sum(record.kind == "next_day" for record in records)
+        successful = self._successful_next_day_count(entries, as_of)
         summary = self._batch_summary(as_of, successful, errors)
         self._write_batch_summary(summary)
         self.build_report()
@@ -88,24 +94,67 @@ class EvaluationRunner:
             raise RuntimeError("market provider latest complete date does not equal today")
         return as_of
 
+    def _require_provider_data_complete(self, as_of: date, entries: list[StockPoolEntry]) -> None:
+        latest_complete = self._provider_latest_complete_date()
+        if latest_complete is not None:
+            if latest_complete != as_of:
+                raise RuntimeError("provider data for today is not complete")
+            return
+
+        for entry in entries:
+            try:
+                history = self.market_data.raw_history(entry.code, days=5, end_date=as_of)
+                latest_history_date = self._latest_history_date(history)
+            except Exception as exc:
+                raise RuntimeError("provider data for today is not complete") from exc
+            if latest_history_date != as_of:
+                raise RuntimeError("provider data for today is not complete")
+
+    def _provider_latest_complete_date(self) -> date | None:
+        provider_method = getattr(self.market_data, "latest_complete_date", None)
+        if not callable(provider_method):
+            return None
+        value = provider_method()
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            try:
+                return date.fromisoformat(value)
+            except ValueError as exc:
+                raise RuntimeError("provider data for today is not complete") from exc
+        if value is None:
+            return None
+        raise RuntimeError("provider data for today is not complete")
+
+    @staticmethod
+    def _latest_history_date(history: pd.DataFrame) -> date:
+        if not isinstance(history, pd.DataFrame) or history.empty or "date" not in history:
+            raise RuntimeError("provider history is missing")
+        dates = pd.to_datetime(history["date"], errors="coerce").dropna()
+        if dates.empty:
+            raise RuntimeError("provider history is missing")
+        return max(value.date() for value in dates)
+
     def _require_valid_chains(self) -> None:
         verification = self.storage.verify_chain()
         if not verification.get("ok"):
             raise RuntimeError(f"evaluation storage chain is invalid: {verification.get('error', '')}")
 
-    def _forecast_missing(
+    def _forecast_missing_kind(
         self,
         entries: list[StockPoolEntry],
         as_of: date,
         target: date,
+        kind: str,
         generated_at: datetime,
     ) -> tuple[list[PredictionRecord], list[str]]:
         jobs: list[tuple[StockPoolEntry, str]] = []
-        for kind in ("stage", "next_day"):
-            for entry in entries:
-                prediction_id = f"{kind}:{as_of.isoformat()}:{entry.code}"
-                if not self.storage.prediction_exists(prediction_id):
-                    jobs.append((entry, kind))
+        for entry in entries:
+            prediction_id = self._prediction_id(kind, as_of, entry.code)
+            if not self.storage.prediction_exists(prediction_id):
+                jobs.append((entry, kind))
 
         records: list[PredictionRecord] = []
         errors: list[str] = []
@@ -123,6 +172,17 @@ class EvaluationRunner:
                 if error is not None:
                     errors.append(error)
         return records, sorted(errors)
+
+    def _successful_next_day_count(self, entries: list[StockPoolEntry], as_of: date) -> int:
+        return sum(
+            1
+            for entry in entries
+            if self.storage.prediction_exists(self._prediction_id("next_day", as_of, entry.code))
+        )
+
+    @staticmethod
+    def _prediction_id(kind: str, as_of: date, code: str) -> str:
+        return f"{kind}:{as_of.isoformat()}:{code}"
 
     def _forecast_one(
         self,

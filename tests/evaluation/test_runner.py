@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 from src.evaluation.models import BatchSummary, ModelForecast, PredictionRecord, StockPoolEntry
 from src.evaluation.runner import EvaluationRunner
 
@@ -35,9 +37,11 @@ def prediction(entry: StockPoolEntry, kind: str, target: date) -> PredictionReco
 
 def make_runner(
     *,
-    existing_codes: set[str] | None = None,
+    existing_ids: set[str] | None = None,
     latest_date: date | None = None,
+    history_latest_date: date | None = None,
     failing_codes: set[str] | None = None,
+    latest_complete_date: date | None = None,
 ):
     calls: list[str] = []
     entries = [
@@ -46,17 +50,30 @@ def make_runner(
     ]
     entries[0] = StockPoolEntry(code="600519", name="Moutai", industry="test")
     storage = Mock()
-    existing_codes = existing_codes or set()
+    existing_ids = existing_ids or set()
     storage.verify_chain.return_value = {"ok": True}
-    storage.prediction_exists.side_effect = lambda prediction_id: prediction_id.split(":")[-1] in existing_codes
+    storage.prediction_exists.side_effect = lambda prediction_id: prediction_id in existing_ids
 
     def append_prediction(record):
-        calls.append(record.code)
-        existing_codes.add(record.code)
+        calls.append(f"append:{record.kind}:{record.code}")
+        existing_ids.add(record.prediction_id)
 
     storage.append_prediction.side_effect = append_prediction
     market = Mock()
     market.trade_dates.return_value = [date(2026, 7, 13), latest_date or date(2026, 7, 14), date(2026, 7, 15)]
+    if latest_complete_date is not None:
+        market.latest_complete_date.return_value = latest_complete_date
+    else:
+        del market.latest_complete_date
+
+    def raw_history(code, days, end_date):
+        return pd.DataFrame(
+            [
+                {"date": pd.Timestamp(history_latest_date or end_date), "close": 100.0, "volume": 1000.0},
+            ]
+        )
+
+    market.raw_history.side_effect = raw_history
     pool = Mock()
     pool.freeze.return_value = entries
     settlement = Mock()
@@ -85,17 +102,58 @@ def make_runner(
 
 
 class RunnerTests(unittest.TestCase):
-    def test_daily_settles_before_forecasting_and_resumes_missing_codes(self):
-        runner, calls = make_runner(existing_codes={"600519"})
+    @staticmethod
+    def existing_id(kind: str, code: str) -> str:
+        return f"{kind}:2026-07-14:{code}"
+
+    def test_daily_settles_before_forecasting_and_counts_resumed_next_day_predictions(self):
+        runner, calls = make_runner(existing_ids={self.existing_id("next_day", "600519")})
 
         summary = runner.run_daily(FIXED_AFTER_CLOSE)
 
         self.assertEqual(calls[0], "settle")
-        self.assertNotIn("600519", calls)
+        self.assertNotIn("append:next_day:600519", calls)
         self.assertEqual(summary.pool_size, 20)
-        self.assertEqual(summary.successful_predictions, 19)
-        self.assertFalse(summary.complete)
-        self.assertAlmostEqual(summary.coverage_rate, 0.95)
+        self.assertEqual(summary.successful_predictions, 20)
+        self.assertTrue(summary.complete)
+        self.assertAlmostEqual(summary.coverage_rate, 1.0)
+
+    def test_full_rerun_resume_reports_complete_without_appending_predictions(self):
+        existing_ids = {
+            self.existing_id(kind, f"{600000 + index:06d}")
+            for kind in ("stage", "next_day")
+            for index in range(20)
+        }
+        existing_ids.add(self.existing_id("stage", "600519"))
+        existing_ids.add(self.existing_id("next_day", "600519"))
+        runner, calls = make_runner(existing_ids=existing_ids)
+
+        summary = runner.run_daily(FIXED_AFTER_CLOSE)
+
+        self.assertEqual(calls, ["settle"])
+        self.assertEqual(summary.successful_predictions, 20)
+        self.assertTrue(summary.complete)
+
+    def test_resumption_is_distinct_per_prediction_kind(self):
+        runner, calls = make_runner(existing_ids={self.existing_id("stage", "600519")})
+
+        summary = runner.run_daily(FIXED_AFTER_CLOSE)
+
+        self.assertNotIn("append:stage:600519", calls)
+        self.assertIn("append:next_day:600519", calls)
+        self.assertEqual(summary.successful_predictions, 20)
+        self.assertTrue(summary.complete)
+
+    def test_stage_records_are_appended_before_next_day_records(self):
+        runner, calls = make_runner()
+
+        runner.run_daily(FIXED_AFTER_CLOSE)
+
+        stage_positions = [index for index, call in enumerate(calls) if call.startswith("append:stage:")]
+        next_day_positions = [index for index, call in enumerate(calls) if call.startswith("append:next_day:")]
+        self.assertEqual(len(stage_positions), 20)
+        self.assertEqual(len(next_day_positions), 20)
+        self.assertLess(max(stage_positions), min(next_day_positions))
 
     def test_before_close_is_rejected(self):
         runner, _ = make_runner()
@@ -108,6 +166,36 @@ class RunnerTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "latest complete date"):
             runner.run_daily(FIXED_AFTER_CLOSE)
+
+    def test_stale_provider_history_for_today_is_rejected(self):
+        runner, _ = make_runner(history_latest_date=date(2026, 7, 13))
+
+        with self.assertRaisesRegex(RuntimeError, "provider data for today"):
+            runner.run_daily(FIXED_AFTER_CLOSE)
+
+    def test_stale_provider_latest_complete_date_is_rejected(self):
+        runner, _ = make_runner(latest_complete_date=date(2026, 7, 13))
+
+        with self.assertRaisesRegex(RuntimeError, "provider data for today"):
+            runner.run_daily(FIXED_AFTER_CLOSE)
+
+    def test_twenty_predictions_is_complete(self):
+        runner, _ = make_runner()
+
+        summary = runner.run_daily(FIXED_AFTER_CLOSE)
+
+        self.assertEqual(summary.successful_predictions, 20)
+        self.assertTrue(summary.complete)
+        self.assertIn("complete", summary.warnings)
+
+    def test_eighteen_predictions_is_partial(self):
+        runner, _ = make_runner(failing_codes={"600018", "600019"})
+
+        summary = runner.run_daily(FIXED_AFTER_CLOSE)
+
+        self.assertEqual(summary.successful_predictions, 18)
+        self.assertFalse(summary.complete)
+        self.assertIn("partial", summary.warnings)
 
     def test_batch_is_incomplete_below_eighteen_predictions(self):
         runner, _ = make_runner(failing_codes={"600017", "600018", "600019"})
