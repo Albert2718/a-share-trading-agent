@@ -2,7 +2,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Mapping
+from types import MappingProxyType
+from collections.abc import Mapping
+from typing import Any
+
+
+def _freeze_metadata(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _freeze_metadata(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_metadata(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze_metadata(item) for item in value)
+    return value
+
+
+def _thaw_metadata(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_metadata(item) for key, item in value.items()}
+    if isinstance(value, (tuple, frozenset)):
+        return [_thaw_metadata(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -26,6 +48,20 @@ class EvidenceItem:
     evidence_type: str = ""
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", _freeze_metadata(self.metadata))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible snapshot of this evidence item."""
+        return {
+            "source": self.source,
+            "summary": self.summary,
+            "published_at": self.published_at,
+            "retrieved_at": self.retrieved_at,
+            "evidence_type": self.evidence_type,
+            "metadata": _thaw_metadata(self.metadata),
+        }
+
 
 @dataclass(frozen=True)
 class ModelForecast:
@@ -35,6 +71,10 @@ class ModelForecast:
     interval_low: float
     interval_high: float
     confidence: float
+
+    def __post_init__(self) -> None:
+        if self.direction not in {"up", "down"}:
+            raise ValueError("direction must be 'up' or 'down'")
 
 
 @dataclass(frozen=True)
@@ -114,6 +154,10 @@ class OutcomeRecord:
     corporate_action: bool = False
     agent_error: ModelError | None = None
     lstm_error: ModelError | None = None
+
+    def __post_init__(self) -> None:
+        if self.actual_direction not in {"up", "down", "flat"}:
+            raise ValueError("actual_direction must be 'up', 'down', or 'flat'")
 
 
 @dataclass(frozen=True)

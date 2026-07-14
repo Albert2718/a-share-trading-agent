@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import unittest
 from datetime import date
+import json
 
 from src.evaluation.calendar import next_trade_date
 from src.evaluation.metrics import settle_direction, summarize_metrics
-from src.evaluation.models import BatchSummary, ModelError, ModelForecast, OutcomeRecord
+from src.evaluation.models import (
+    BatchSummary,
+    EvidenceItem,
+    ModelError,
+    ModelForecast,
+    OutcomeRecord,
+)
 
 
 def make_forecast(
@@ -53,6 +60,44 @@ def make_outcome(
 
 
 class CalendarMetricTests(unittest.TestCase):
+    def test_model_forecast_rejects_invalid_direction(self):
+        with self.assertRaisesRegex(ValueError, "direction must be 'up' or 'down'"):
+            make_forecast(10.0, direction="flat")
+
+    def test_outcome_record_rejects_invalid_actual_direction(self):
+        with self.assertRaisesRegex(
+            ValueError, "actual_direction must be 'up', 'down', or 'flat'"
+        ):
+            OutcomeRecord(
+                prediction_id="p-1",
+                target_trade_date=date(2026, 7, 20),
+                previous_close=10.0,
+                actual_open=10.0,
+                actual_high=10.0,
+                actual_low=10.0,
+                actual_close=10.0,
+                actual_return=0.0,
+                actual_direction="sideways",
+            )
+
+    def test_evidence_metadata_is_snapshot_and_json_serializable(self):
+        metadata = {"tags": ["market"], "nested": {"source_id": "a1"}}
+        evidence = EvidenceItem(source="report", metadata=metadata)
+
+        metadata["tags"].append("news")
+        metadata["nested"]["source_id"] = "changed"
+
+        with self.assertRaises(TypeError):
+            evidence.metadata["new"] = "value"
+        with self.assertRaises(TypeError):
+            evidence.metadata["nested"]["source_id"] = "changed-again"
+        self.assertEqual(evidence.metadata["tags"], ("market",))
+        self.assertEqual(evidence.metadata["nested"]["source_id"], "a1")
+        self.assertEqual(json.loads(json.dumps(evidence.to_dict()))["metadata"], {
+            "tags": ["market"],
+            "nested": {"source_id": "a1"},
+        })
+
     def test_next_trade_date_skips_weekend(self):
         dates = [date(2026, 7, 17), date(2026, 7, 20)]
         self.assertEqual(next_trade_date(dates, date(2026, 7, 17)), date(2026, 7, 20))
