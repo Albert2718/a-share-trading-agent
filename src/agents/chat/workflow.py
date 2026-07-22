@@ -1,53 +1,87 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 
 from langgraph.graph import END, StateGraph
 
 from src.core import LLMClient, get_llm_client
-from src.tools.registry import ToolRegistry
 
-from .nodes import chat_agent_node, should_continue, tool_node
-from .state import AgentState
-from .tool_catalog import build_default_registry
+from .nodes import AgentToolExecutor, chat_agent_node, should_continue, tool_node
+from .state import AgentEventCallback, AgentState
 
 
-def create_chat_workflow(
-    llm_client: LLMClient | None = None,
-    registry: ToolRegistry | None = None,
-):
-    llm = llm_client or get_llm_client()
-    tools = registry or build_default_registry()
-    workflow = StateGraph(AgentState)
-    workflow.add_node("chat_agent", partial(chat_agent_node, llm_client=llm, registry=tools))
-    workflow.add_node("tools", partial(tool_node, registry=tools))
-    workflow.set_entry_point("chat_agent")
-    workflow.add_conditional_edges("chat_agent", should_continue, {"tools": "tools", "end": END})
-    workflow.add_edge("tools", "chat_agent")
-    return workflow.compile()
+@dataclass(frozen=True)
+class AgentRunResult:
+    answer: str
+    tool_results: List[Dict[str, Any]] = field(default_factory=list)
+    pending_action: Dict[str, Any] | None = None
+    error: str | None = None
 
 
-def run_chat_turn(
-    user_input: str,
-    *,
-    session_id: Optional[str] = None,
-    history: Optional[List[Dict[str, Any]]] = None,
-    llm_client: LLMClient | None = None,
-    registry: ToolRegistry | None = None,
-) -> AgentState:
-    workflow = create_chat_workflow(llm_client=llm_client, registry=registry)
-    messages = list(history or [])
-    messages.append({"role": "user", "content": user_input})
-    return workflow.invoke(
-        {
-            "user_input": user_input,
-            "session_id": session_id,
-            "messages": messages,
-            "pending_tool_calls": [],
-            "tool_results": [],
-            "final_answer": "",
-            "iteration_count": 0,
-            "error": None,
-        }
-    )
+class LangGraphChatAgent:
+    """The single top-level chat Agent used by the web application."""
+
+    def __init__(
+        self,
+        executor: AgentToolExecutor,
+        system_prompt: str,
+        *,
+        llm_client: LLMClient | None = None,
+        llm_timeout_seconds: float = 30,
+    ):
+        self.executor = executor
+        self.system_prompt = system_prompt
+        self.llm_client = llm_client or get_llm_client()
+        graph = StateGraph(AgentState)
+        graph.add_node(
+            "chat_agent",
+            partial(
+                chat_agent_node,
+                llm_client=self.llm_client,
+                executor=self.executor,
+                system_prompt=self.system_prompt,
+                llm_timeout_seconds=llm_timeout_seconds,
+            ),
+        )
+        graph.add_node("tools", partial(tool_node, executor=self.executor))
+        graph.set_entry_point("chat_agent")
+        graph.add_conditional_edges("chat_agent", should_continue, {"tools": "tools", "end": END})
+        graph.add_edge("tools", "chat_agent")
+        self.graph = graph.compile()
+
+    async def run(
+        self,
+        messages: List[Dict[str, Any]],
+        on_token: Callable[[str], None] | None = None,
+        on_event: AgentEventCallback | None = None,
+    ) -> AgentRunResult:
+        if on_event is not None:
+            on_event(
+                "planning",
+                {
+                    "id": "planning",
+                    "phase": "planning",
+                    "status": "running",
+                },
+            )
+        state = await self.graph.ainvoke(
+            {
+                "messages": list(messages),
+                "pending_tool_calls": [],
+                "tool_results": [],
+                "pending_action": None,
+                "final_answer": "",
+                "iteration_count": 0,
+                "error": None,
+                "on_token": on_token,
+                "on_event": on_event,
+            }
+        )
+        return AgentRunResult(
+            answer=state.get("final_answer") or "我没有得到可用回答。",
+            tool_results=list(state.get("tool_results", [])),
+            pending_action=state.get("pending_action"),
+            error=state.get("error"),
+        )

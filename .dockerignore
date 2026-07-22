@@ -1,0 +1,17 @@
+.git
+.agents
+.worktrees
+ref
+handoffs
+images
+.env
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+frontend/node_modules
+frontend/dist
+data
+evaluation
+outputs
+tmp

@@ -1,10 +1,8 @@
 akshare==1.18.64
-inquirerpy
 langgraph
 numpy
 openai
 pandas
 python-dotenv
 requests
-rich
 torch

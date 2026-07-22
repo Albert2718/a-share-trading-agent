@@ -9,13 +9,14 @@ from dataclasses import asdict, dataclass, is_dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 import numpy as np
 import pandas as pd
 
-from src.agents.research.orchestrator import ResearchOrchestrator
-from src.agents.research.schemas import AnalysisContext, StockCandidate, StockDecision
+from src.research.orchestrator import ResearchOrchestrator
+from src.research.schemas import AnalysisContext, StockCandidate, StockDecision
+from src.research.utils import redact_recursive, sanitize_secret_text
 from src.core import LLMClient, load_config
 from src.tools.lstm import LSTMPredictor
 
@@ -124,7 +125,7 @@ class EvaluationForecaster:
         reports, warnings = _cutoff_safe_reports(decision, generated)
         llm_reports = _reports_for_llm(reports)
         horizon_days = 1 if kind == "next_day" else max(1, (target - as_of).days)
-        payload = _redact_recursive({
+        payload = redact_recursive({
             "stock": {
                 "code": entry.code,
                 "name": entry.name,
@@ -296,10 +297,10 @@ def _cutoff_safe_reports(
     decision: StockDecision, generated_at: datetime
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     reports = {
-        "quant": _redact_recursive(_json_safe(deepcopy(decision.quant))),
-        "fundamental": _redact_recursive(_json_safe(deepcopy(decision.fundamental))),
-        "news": _redact_recursive(_json_safe(deepcopy(decision.news))),
-        "sentiment": _redact_recursive(_json_safe(deepcopy(decision.sentiment))),
+        "quant": redact_recursive(_json_safe(deepcopy(decision.quant))),
+        "fundamental": redact_recursive(_json_safe(deepcopy(decision.fundamental))),
+        "news": redact_recursive(_json_safe(deepcopy(decision.news))),
+        "sentiment": redact_recursive(_json_safe(deepcopy(decision.sentiment))),
     }
     for report in reports.values():
         _remove_model_signal(report)
@@ -338,7 +339,7 @@ def _reports_for_llm(reports: Mapping[str, dict[str, Any]]) -> dict[str, dict[st
     llm_reports = deepcopy(dict(reports))
     for report in llm_reports.values():
         _remove_model_signal(report)
-    return _redact_recursive(llm_reports)
+    return redact_recursive(llm_reports)
 
 
 def _parse_research_draft(response: Any) -> ResearchDraft:
@@ -598,7 +599,7 @@ def _safe_cio_snapshot(
     decision: StockDecision,
     reports: Mapping[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    snapshot = _redact_recursive(_json_safe(asdict(decision)))
+    snapshot = redact_recursive(_json_safe(asdict(decision)))
     for name, report in reports.items():
         snapshot[name] = report
 
@@ -628,83 +629,9 @@ def _safe_cio_snapshot(
     return snapshot
 
 
-_SENSITIVE_KEYS = {
-    "api_key",
-    "apikey",
-    "authorization",
-    "password",
-    "passwd",
-    "secret",
-    "token",
-    "access_token",
-    "refresh_token",
-}
-_URL_PATTERN = re.compile(r"https?://[^\s;]+", re.IGNORECASE)
-_AUTH_PATTERN = re.compile(
-    r"authorization\s*:\s*(?:bearer|basic)\s+[^\s;]+",
-    re.IGNORECASE,
-)
-_CREDENTIAL_PATTERN = re.compile(
-    r"\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|passwd|password|secret))\s*[:=]\s*[^\s&;]+",
-    re.IGNORECASE,
-)
-_BEARER_PATTERN = re.compile(
-    r"\bbearer\s+[^\s;]+",
-    re.IGNORECASE,
-)
-
-
-def _redact_recursive(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        result = {}
-        for key, item in value.items():
-            key_text = str(key)
-            if _is_sensitive_key(key_text):
-                result[key_text] = "[REDACTED]"
-            else:
-                result[key_text] = _redact_recursive(item)
-        return result
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_redact_recursive(item) for item in value]
-    if isinstance(value, str):
-        return _sanitize_string(value)
-    return value
-
-
-def _sanitize_string(value: str) -> str:
-    text = _AUTH_PATTERN.sub("Authorization: [REDACTED]", value)
-    text = _CREDENTIAL_PATTERN.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
-    text = _BEARER_PATTERN.sub("Bearer [REDACTED]", text)
-
-    def sanitize_url(match: re.Match[str]) -> str:
-        raw_url = match.group(0)
-        try:
-            parsed = urlsplit(raw_url)
-        except ValueError:
-            return "[REDACTED_URL]"
-        if not parsed.hostname:
-            return "[REDACTED_URL]"
-        host = parsed.hostname
-        if parsed.port:
-            host = f"{host}:{parsed.port}"
-        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
-
-    return _URL_PATTERN.sub(sanitize_url, text)
-
-
 def _safe_label(value: Any) -> str:
-    text = _sanitize_string(str(value or "")).strip()
+    text = sanitize_secret_text(str(value or "")).strip()
     return text if "[REDACTED]" not in text else "[REDACTED]"
-
-
-def _is_sensitive_key(value: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
-    compact = re.sub(r"[^a-z0-9]+", "", value.casefold())
-    if normalized in _SENSITIVE_KEYS or compact in _SENSITIVE_KEYS:
-        return True
-    return normalized.endswith(("_api_key", "_apikey", "_authorization", "_password", "_passwd", "_secret", "_token")) or compact.endswith(
-        ("apikey", "authorization", "password", "passwd", "secret", "token")
-    )
 
 
 def _is_finite_number(value: Any) -> bool:

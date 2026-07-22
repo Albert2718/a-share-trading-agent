@@ -1,0 +1,31 @@
+from app.models.domain import (
+    Conversation,
+    KnowledgeChunk,
+    KnowledgeDocument,
+    Message,
+    OutboxEvent,
+    Portfolio,
+    Position,
+    PriceAlert,
+    ResearchJob,
+    ResearchReport,
+    ToolAction,
+    User,
+    UserMemory,
+)
+
+__all__ = [
+    "Conversation",
+    "KnowledgeChunk",
+    "KnowledgeDocument",
+    "Message",
+    "OutboxEvent",
+    "Portfolio",
+    "Position",
+    "PriceAlert",
+    "ResearchJob",
+    "ResearchReport",
+    "ToolAction",
+    "User",
+    "UserMemory",
+]

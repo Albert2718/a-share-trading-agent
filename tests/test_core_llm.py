@@ -20,6 +20,29 @@ class _Completions:
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
+class _StreamingCompletions:
+    def create(self, **kwargs):
+        assert kwargs["stream"] is True
+        return iter(
+            [
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content="研究", tool_calls=[])
+                        )
+                    ]
+                ),
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content="完成", tool_calls=[])
+                        )
+                    ]
+                ),
+            ]
+        )
+
+
 class CoreLLMTests(unittest.TestCase):
     def test_core_import_does_not_load_agents_or_tools(self):
         script = (
@@ -65,6 +88,25 @@ class CoreLLMTests(unittest.TestCase):
             completions.last_kwargs["extra_body"],
             {"thinking": {"type": "disabled"}},
         )
+
+    def test_chat_with_tools_stream_forwards_text_tokens(self):
+        llm = LLMClient.__new__(LLMClient)
+        llm.model = "test-model"
+        llm.base_url = ""
+        llm.client = SimpleNamespace(
+            chat=SimpleNamespace(completions=_StreamingCompletions())
+        )
+        tokens = []
+
+        response = llm.chat_with_tools_stream(
+            [{"role": "user", "content": "analyze"}],
+            [{"type": "function", "function": {"name": "sample_tool"}}],
+            tokens.append,
+        )
+
+        self.assertEqual(tokens, ["研究", "完成"])
+        self.assertEqual(response.content, "研究完成")
+        self.assertEqual(response.tool_calls, [])
 
 
 if __name__ == "__main__":

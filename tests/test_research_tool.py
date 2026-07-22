@@ -5,8 +5,8 @@ from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 
-from src.agents.research.orchestrator import ResearchOrchestrator
-from src.agents.research.schemas import (
+from src.research.orchestrator import ResearchOrchestrator
+from src.research.schemas import (
     AnalysisContext,
     EventCard,
     FinalReport,
@@ -17,12 +17,12 @@ from src.agents.research.schemas import (
     StockCandidate,
     StockDecision,
 )
-from src.agents.research.analysts.cio import CIOAgent
-from src.agents.research.tool import DeepResearchTool
-from src.agents.research.analysts.sentiment import SentimentAnalyst
-from src.agents.research.analysts.news import NewsAnalyst
-from src.agents.research.analysts.quant import QuantAnalyst
-from src.agents.research.utils import redact_recursive
+from src.research.analysts.cio import CIOAgent
+from src.research.analysts.sentiment import SentimentAnalyst
+from src.research.analysts.news import NewsAnalyst
+from src.research.analysts.quant import QuantAnalyst
+from src.research.utils import redact_recursive
+from src.tools.deep_research import DeepResearchTool
 
 
 class _CompositeOrchestrator:

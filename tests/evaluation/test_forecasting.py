@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from src.agents.research.schemas import FinalReport, StockDecision
+from src.research.schemas import FinalReport, StockDecision
 from src.evaluation.forecasting import EvaluationForecaster, ResearchDraft, blend_forecast
 from src.evaluation.models import StockPoolEntry
 

@@ -1,4 +1,3 @@
 # Tests
 
-后续优先补 `schemas`、`model_tools`、`cio` 规则决策和缓存层的单元测试。
-
+根目录测试覆盖共享 Agent、研究管线、行情工具和固定 20 股评测；FastAPI 的接口、事务、确认操作与 Worker 测试位于 `backend/tests/`。

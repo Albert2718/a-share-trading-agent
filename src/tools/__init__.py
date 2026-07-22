@@ -1,5 +1,1 @@
-"""Executable market and portfolio tools.
-
-Concrete tools are imported explicitly by the chat tool catalog so importing
-this package does not initialize every external integration.
-"""
+"""Reusable market-data, news and model capabilities used by research and Web tools."""

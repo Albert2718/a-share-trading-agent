@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .config import load_config
 
@@ -81,6 +81,71 @@ class LLMClient:
                 )
             )
         return LLMResponse(content=getattr(message, "content", None) or "", tool_calls=calls)
+
+    def chat_with_tools_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        on_token: Callable[[str], None],
+        temperature: float = 0,
+    ) -> LLMResponse:
+        """Stream assistant text while still aggregating OpenAI tool-call deltas."""
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+            temperature=temperature,
+            stream=True,
+            **self._provider_request_options(),
+        )
+        content_parts: list[str] = []
+        calls: dict[int, dict[str, str]] = {}
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            if delta is None:
+                continue
+            content = getattr(delta, "content", None) or ""
+            if content:
+                content_parts.append(content)
+                on_token(content)
+            for call in getattr(delta, "tool_calls", None) or []:
+                index = int(getattr(call, "index", 0) or 0)
+                item = calls.setdefault(
+                    index, {"id": "", "name": "", "arguments": ""}
+                )
+                item["id"] += getattr(call, "id", None) or ""
+                function = getattr(call, "function", None)
+                if function is not None:
+                    item["name"] += getattr(function, "name", None) or ""
+                    item["arguments"] += getattr(function, "arguments", None) or ""
+        tool_calls = []
+        for item in calls.values():
+            try:
+                arguments = json.loads(item["arguments"] or "{}")
+            except json.JSONDecodeError:
+                arguments = {}
+            tool_calls.append(
+                LLMToolCall(
+                    id=item["id"] or item["name"] or "tool",
+                    name=item["name"],
+                    arguments=arguments if isinstance(arguments, dict) else {},
+                )
+            )
+        return LLMResponse(content="".join(content_parts), tool_calls=tool_calls)
+
+    def chat(self, messages: List[Dict[str, Any]], temperature: float = 0.2) -> str:
+        """Run a tool-free conversational turn for the web Agent."""
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            **self._provider_request_options(),
+        )
+        return self._response_content(response) or ""
 
     def structured(
         self,
